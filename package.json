@@ -37,7 +37,7 @@
   "license": "MIT",
   "scripts": {
     "prepare": "lefthook install",
-    "test": "node --test tests/",
+    "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "lint:fix": "biome lint . --write",
@@ -45,7 +45,7 @@
     "format:fix": "biome format . --write",
     "check:biome": "biome check .",
     "check:biome:fix": "biome check . --write",
-    "check": "tsc --noEmit && biome check . && node --test tests/",
+    "check": "tsc --noEmit && biome check . && npm test",
     "release": "release-please release-pr --repo-url=https://github.com/aguarnac/opencode-v2-cursor-rules.git"
   },
   "dependencies": {
