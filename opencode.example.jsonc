@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["@aguarnac/opencode-v2-cursor-rules@2.0.0"]
+}
+
+// With explicit options (all optional):
+// {
+//   "$schema": "https://opencode.ai/config.json",
+//   "plugins": [
+//     {
+//       "package": "@aguarnac/opencode-v2-cursor-rules@2.0.0",
+//       "options": {
+//         "userRulesDir": "/custom/path/to/rules",
+//         "projectRulesDir": "/custom/project/.opencode/rules",
+//         "legacyFilePath": null,
+//         "maxSessions": 100
+//       }
+//     }
+//   ]
+// }

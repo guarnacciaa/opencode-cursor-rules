@@ -1,49 +1,53 @@
-# opencode-cursor-rules - Technical Design
+# opencode-v2-cursor-rules - Technical Design
 
 ## Overview
 
-An OpenCode plugin that brings **full Cursor rules support** to OpenCode. It reads `.mdc` rule files from user-level and project-level directories, then injects matching rules into AI conversations -- **exactly how Cursor does it**.
+An OpenCode **v2** Effect plugin that brings **full Cursor rules support** to OpenCode. It reads `.mdc` rule files from user-level and project-level directories, then injects matching rules into AI conversations, exactly how Cursor does it.
+
+This project is a hard fork of [`zackBRAVE/opencode-cursor-rules`](https://github.com/zackBRAVE/opencode-cursor-rules) (OpenCode v1). Rule parsing and matching semantics are ported from the original; the plugin runtime layer is rewritten for the OpenCode v2 Effect API.
 
 The plugin is designed as a **symlink-friendly bridge**: users symlink `.cursor/rules` into `.opencode/rules` (or `~/.config/opencode/rules`), and the plugin handles everything. No config, no migration, just works.
 
 ## Goals
 
-1. **100% Cursor-compatible** -- Same `.mdc` format, same frontmatter, same behavior
-2. **All four rule application modes** -- Always, auto-attach (glob), agent-requested (description), manual
-3. **Both project and user/global rules** -- Project: `<project>/.opencode/rules/`, User: `~/.config/opencode/rules/`
-4. **Performance** -- Lazy loading, mtime-based caching, zero file watchers, minimal memory
-5. **Robustness** -- Handle broken symlinks, missing dirs, malformed YAML, circular refs gracefully
-6. **Legacy support** -- `.cursorrules` flat file in project root
+1. **100% Cursor-compatible** - Same `.mdc` format, same frontmatter, same behavior
+2. **All four rule application modes** - Always, auto-attach (glob), agent-requested (description), manual
+3. **Both project and user/global rules** - Project: `<project>/.opencode/rules/`, User: `~/.config/opencode/rules/`
+4. **Native v2** - Effect plugin (`Plugin.define`), session/tool hooks, command/tool transforms, Effect logging
+5. **Performance** - Lazy loading, mtime+size caching, zero file watchers, minimal memory
+6. **Robustness** - Total tool executors (failures become messages, never session errors), bounded session state, stale cache eviction, Node builtins only
+7. **Legacy support** - `.cursorrules` flat file in project root
 
 ## Architecture
 
-```
-index.ts          Plugin entry point, wires hooks to core modules
+```text
+index.ts          Effect plugin entry (Plugin.define: hooks, tools, commands)
 src/
-├── parser.ts     MDC frontmatter extraction + YAML parsing
-├── loader.ts     Rule discovery, caching, mtime invalidation
-├── matcher.ts    Glob matching + rule selection logic
-├── tools.ts      OpenCode tools for rule management
+├── parser.ts     MDC frontmatter extraction + YAML parsing (pure)
+├── loader.ts     Rule discovery, caching, mtime+size invalidation (Node builtins)
+├── matcher.ts    Glob matching + rule selection logic (pure)
+├── tools.ts      Rule file creation/listing helpers (shared by tool executors)
 └── types.ts      TypeScript interfaces
+tests/            node:test suites (parser, matcher, loader, tools, integration)
 ```
 
 ### Why This Structure
 
 - **parser.ts** is pure: string in → structured data out. No I/O side effects, easily testable.
-- **loader.ts** owns all filesystem access. Caches parsed rules keyed by `(path, mtime)`.
+- **loader.ts** owns all filesystem access. Uses only `node:fs`/`node:path` (no `Bun.*`), so it runs on any host runtime. Caches parsed rules keyed by path with `(mtimeMs, size)` validation and evicts entries for deleted files.
 - **matcher.ts** is pure: rules + context → selected rules. No I/O, easily testable.
-- **tools.ts** implements OpenCode tools for creating and listing rules.
-- **index.ts** is the thin orchestration layer that connects loader + matcher + tools to OpenCode hooks.
+- **tools.ts** holds the file-creation/listing logic shared by the Effect tool executors. Frontmatter is serialized with the `yaml` encoder so values containing quotes or newlines cannot break the file.
+- **index.ts** is the Effect plugin definition: registers hooks, tools, and commands through `ctx`, owns per-session state.
 
 ## Core Components
 
 ### 1. Parser (`src/parser.ts`)
 
-Extracts YAML frontmatter from MDC files and normalizes metadata.
+Unchanged semantics from the original. Extracts YAML frontmatter from MDC files and normalizes metadata.
 
-```
+```text
 Input:  raw file content (string)
-Output: { frontmatter: RuleFrontmatter, body: string } | null
+Output: { frontmatter: RuleFrontmatter, body: string }
 ```
 
 **Frontmatter fields (Cursor MDC spec):**
@@ -54,40 +58,25 @@ Output: { frontmatter: RuleFrontmatter, body: string } | null
 | `globs` | `string \| string[]` | `[]` | Comma-separated or array of file glob patterns |
 | `alwaysApply` | `boolean` | `false` | If true, always injected into system prompt |
 
-**Glob normalization:**
-- String `"*.ts, *.tsx"` → `["*.ts", "*.tsx"]` (split on comma, trim)
-- Array `["*.ts"]` → `["*.ts"]` (pass-through)
-- Missing → `[]`
-
-**Edge cases handled:**
-- No frontmatter → body is entire content, all defaults
-- Empty frontmatter (`---\n---`) → all defaults
-- Invalid YAML → warning, treat as no frontmatter
-- Non-string description → coerce to string
-
 ### 2. Loader (`src/loader.ts`)
 
-Discovers and caches rule files from disk.
+Discovers and caches rule files from disk using Node builtins only.
 
 **Discovery paths:**
-1. User rules: `~/.config/opencode/rules/*.mdc` (respects `XDG_CONFIG_HOME`)
-2. Project rules: `<worktree>/.opencode/rules/*.mdc`
-3. Legacy: `<worktree>/.cursorrules`
+
+1. User rules: `~/.config/opencode/rules/*.mdc|*.md` (respects `XDG_CONFIG_HOME`)
+2. Project rules: `<project>/.opencode/rules/*.mdc|*.md`
+3. Legacy: `<project>/.cursorrules`
 
 **Caching strategy:**
-- Key: absolute file path
-- Invalidation: `stat().mtime` comparison (no file watchers)
-- On each `experimental.chat.system.transform` call, re-stat all known files
-- New files discovered via `Bun.Glob` scan (inexpensive for small dirs)
-- Cache is a plain `Map<string, { rule: Rule; mtimeMs: number }>`
 
-**Why no file watchers:**
-- Rule files change rarely (human-edited config)
-- `stat()` is ~0.01ms, scanning 50 files costs <1ms
-- No background threads, no event loop overhead, no cleanup needed
-- Symlink-compatible (watchers can be unreliable across symlinks)
+- Key: absolute file path
+- Validation: `stat()` mtime **and** size (size guards against coarse timestamp resolution)
+- Stale entries (deleted files) evicted on every `loadAll`
+- No file watchers: `stat()` is ~0.01ms; symlink-compatible
 
 **Merge order:**
+
 1. User rules loaded first
 2. Project rules loaded second (higher priority)
 3. Legacy `.cursorrules` loaded last (always-apply, lowest priority)
@@ -95,108 +84,93 @@ Discovers and caches rule files from disk.
 
 ### 3. Matcher (`src/matcher.ts`)
 
-Selects which rules to inject based on the current context.
+Unchanged semantics from the original. Selects which rules to inject based on the current context.
 
 **Selection algorithm (in priority order):**
 
-1. **Always-apply rules** (`alwaysApply: true`)
-   - Unconditionally included
-   - No context needed
+1. **Always-apply rules** (`alwaysApply: true`) → injected (full content)
+2. **Glob-matched rules** → suggested (path + reason; the agent reads the file)
+3. **Agent-requested rules** (description only) → available (path + description)
+4. **Manual rules** → only via `@rule-name` mention (always promoted to injected)
 
-2. **Glob-matched rules** (has `globs`, `alwaysApply` is false)
-   - Matched against files seen in the session (from `tool.execute.before`)
-   - Uses picomatch for fast glob evaluation
-   - Tests against both full relative path and basename
+### 4. v1 → v2 Hook Mapping (`index.ts`)
 
-3. **Agent-requested rules** (has `description`, no `globs`, `alwaysApply` is false)
-   - Descriptions are listed in a special "available rules" section
-   - The LLM decides which are relevant based on conversation context
-   - Not injected as full content, only descriptions listed
-
-4. **Manual rules** (no frontmatter / no description / no globs / `alwaysApply` is false)
-   - Only included when explicitly `@rule-name` mentioned in user message
-   - Extracted via regex from user message parts
+| v1 | v2 |
+|----|----|
+| `tool.execute.before` (input/output pair) | `ctx.tool.hook("execute.before")` (single mutable event: `{ tool, sessionID, input }`) |
+| `chat.message` | `ctx.session.hook("prompt")` (event `{ sessionID, prompt: { text, ... }, delivery }`) |
+| `experimental.chat.system.transform` (`output.system: string[]`) | `ctx.session.hook("context")` (`event.system: SystemPart[]`, push `{ type: "text", text }`) |
+| `config` hook registering `config.command` | `ctx.command.transform` (`editor.add({ name, description, execute })`) |
+| `tool()` helper map | `ctx.tool.transform` (`editor.add({ name, description, input: Schema.Struct, execute })`) |
+| `client.app.log` | `Effect.logInfo/logDebug/logWarning` |
 
 **Context tracking:**
-- `tool.execute.before` captures file paths from tool calls
-- `chat.message` captures user message text for @-mentions
-- Session state stored in a `Map<sessionID, SessionState>`
 
-### 4. OpenCode Tools (`src/tools.ts`)
+- `execute.before` hook collects file paths from tool inputs (same key heuristics as v1, normalized repo-relative)
+- `prompt` hook stores the latest user text for `@`-mention extraction
+- Session state is a `Map<sessionID, SessionState>` bounded by `maxSessions` (default 100, LRU-ish eviction)
 
-Provides tools for managing rules programmatically:
+**Failure policy:** every async boundary is total. Loader failures log a warning and yield `[]`; tool executors return failure *messages* as content instead of failing the tool call. A broken rules setup can never break a session.
 
-**`create_user_rule`** -- Create user-level rule in `~/.config/opencode/rules/`
-**`create_project_rule`** -- Create project-level rule in `.opencode/rules/`
-**`list_rules`** -- List all loaded rules with metadata
+### 5. Tools and Commands (`index.ts`)
 
-### 5. Plugin Entry (`index.ts`)
+Tools are registered with Effect `Schema.Struct` inputs and return `{ content: string }`:
 
-Thin wiring layer. Initializes loader, returns hooks object.
+- `create_user_rule`, `create_project_rule`, `list_rules`
 
-**Hooks used:**
+Commands are owned plugin commands (v2 best practice for published plugins) that prompt the agent to drive the corresponding tool:
 
-| Hook | Purpose |
-|------|---------|
-| `experimental.chat.system.transform` | Inject matched rules into system prompt |
-| `chat.message` | Capture user message for @-mentions |
-| `tool.execute.before` | Track files accessed in session |
+- `create-user-rule`, `create-project-rule`, `list-rules`
 
 ## System Prompt Injection Format
 
+Same three-tier format as the original:
+
 ```markdown
 <rules>
-The rules section has a number of possible rules/memories/context...
-
-<project_rules description="Rules from .opencode/rules/">
-<rule name="typescript-standards" source="project">
-Use strict TypeScript. Prefer interfaces over types.
-</rule>
-</project_rules>
-
-<user_rules description="Rules from user config">
-<rule name="bun-preference" source="user">
-Always use Bun instead of Node.js.
-</rule>
-</user_rules>
-
-<available_rules description="Rules available on request (ask if relevant)">
-- **react-patterns**: React component best practices (globs: *.tsx)
-- **api-guidelines**: REST API design standards
-</available_rules>
+...
+<user_rules>...full content for injected user rules...</user_rules>
+<project_rules>...full content for injected project rules...</project_rules>
+<suggested_rules>...paths + match reasons for glob-matched rules...</suggested_rules>
+<available_rules>...paths + descriptions for agent-requested rules...</available_rules>
 </rules>
 ```
 
-This XML-style format:
-- Is parseable by LLMs with high fidelity
-- Clearly separates rule sources
-- Mirrors Cursor's injection style
-- Distinguishes full rules from description-only available rules
+The only change is transport: the section is pushed as a `{ type: "text", text }` system part instead of a raw string.
 
 ## Performance Budget
 
 | Operation | Target | Actual |
 |-----------|--------|--------|
-| Plugin init (cold) | <50ms | ~20ms (glob scan + parse) |
+| Plugin init (cold) | <50ms | ~20ms (scan + parse) |
 | Rule injection (warm cache) | <5ms | ~1ms (map lookups + string concat) |
-| Rule injection (cache miss, 20 files) | <20ms | ~10ms (stat + parse) |
 | Memory (50 rules) | <1MB | ~200KB |
-| Per-session state | <1KB | ~500B |
+| Per-session state | <1KB | ~500B (bounded count) |
 
 ## Error Handling
 
 All errors are caught and logged, never thrown to OpenCode:
+
 - Missing directories → skip silently
-- Broken symlinks → skip file, log warning
+- Broken symlinks → skip file
 - Malformed YAML → skip frontmatter, use body as content
-- File read errors → skip file, log warning
+- File read errors → skip file
 - Empty files → skip
+- Loader failure inside hooks → warn + continue with no rules
+- Tool executor failure → failure message as tool content
 
 ## Dependencies
 
 **Runtime:**
-- `yaml` -- YAML frontmatter parsing
-- `picomatch` -- Fast glob matching
+
+- `yaml` - YAML frontmatter parsing and safe frontmatter generation
+- `picomatch` - Fast glob matching
+- `@opencode/plugin` - v2 host API (redirected to the host runtime instance)
+
+**Peer:**
+
+- `effect >= 4.0.0-rc.112` - Must match the host OpenCode release's Effect version (a single copy; never bundled)
 
 **Dev:**
-- TypeScript, Bun, Biome
+
+- TypeScript, Node built-in test runner, Biome

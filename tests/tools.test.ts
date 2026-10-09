@@ -194,17 +194,20 @@ describe("tools", () => {
 
   describe("createProjectRule", () => {
     test("creates a project-level rule file", async () => {
+      const worktree = join(FIXTURES_DIR, "project-worktree");
       const result = await createProjectRule(
         "project-rule",
         "Project rule description",
         "Project content.",
         ["**/*.js"],
         false,
+        worktree,
       );
 
       assert.strictEqual(result.success, true);
       assert.notStrictEqual(result.filePath, undefined);
       assert.ok(result.filePath?.includes(".opencode/rules"));
+      assert.ok(result.filePath?.startsWith(worktree));
       assert.ok(existsSync(result.filePath!));
 
       const content = readFileSync(result.filePath!, "utf-8");
