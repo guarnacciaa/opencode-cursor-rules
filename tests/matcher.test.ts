@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
-import { formatSystemPromptSection, getRuleMode, selectRules } from "../src/matcher";
-import type { MatchedRule, Rule, SessionState } from "../src/types";
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import { formatSystemPromptSection, getRuleMode, selectRules } from "../src/matcher.ts";
+import type { MatchedRule, Rule, SessionState } from "../src/types.ts";
 
 function makeRule(overrides: Partial<Rule> = {}): Rule {
   return {
@@ -30,21 +31,21 @@ describe("getRuleMode", () => {
     const rule = makeRule({
       frontmatter: { alwaysApply: true, globs: [], description: "test" },
     });
-    expect(getRuleMode(rule)).toBe("always");
+    assert.strictEqual(getRuleMode(rule), "always");
   });
 
   test("returns 'always' even with globs when alwaysApply is true", () => {
     const rule = makeRule({
       frontmatter: { alwaysApply: true, globs: ["*.ts"], description: "test" },
     });
-    expect(getRuleMode(rule)).toBe("always");
+    assert.strictEqual(getRuleMode(rule), "always");
   });
 
   test("returns 'glob' when has globs and alwaysApply is false", () => {
     const rule = makeRule({
       frontmatter: { alwaysApply: false, globs: ["*.ts"] },
     });
-    expect(getRuleMode(rule)).toBe("glob");
+    assert.strictEqual(getRuleMode(rule), "glob");
   });
 
   test("returns 'agent' when has description only", () => {
@@ -55,14 +56,14 @@ describe("getRuleMode", () => {
         description: "A helpful rule",
       },
     });
-    expect(getRuleMode(rule)).toBe("agent");
+    assert.strictEqual(getRuleMode(rule), "agent");
   });
 
   test("returns 'manual' when no description, no globs, not alwaysApply", () => {
     const rule = makeRule({
       frontmatter: { alwaysApply: false, globs: [] },
     });
-    expect(getRuleMode(rule)).toBe("manual");
+    assert.strictEqual(getRuleMode(rule), "manual");
   });
 });
 
@@ -78,9 +79,9 @@ describe("selectRules", () => {
       const session = makeSession();
 
       const { injected } = selectRules(rules, session);
-      expect(injected.length).toBe(1);
-      expect(injected[0]?.rule.name).toBe("always-rule");
-      expect(injected[0]?.reason).toBe("alwaysApply: true");
+      assert.strictEqual(injected.length, 1);
+      assert.strictEqual(injected[0]?.rule.name, "always-rule");
+      assert.strictEqual(injected[0]?.reason, "alwaysApply: true");
     });
 
     test("includes multiple always-apply rules", () => {
@@ -91,7 +92,7 @@ describe("selectRules", () => {
       const session = makeSession();
 
       const { injected } = selectRules(rules, session);
-      expect(injected.length).toBe(2);
+      assert.strictEqual(injected.length, 2);
     });
   });
 
@@ -106,9 +107,9 @@ describe("selectRules", () => {
       const session = makeSession({ filePaths: new Set(["src/index.ts"]) });
 
       const { injected, suggested } = selectRules(rules, session);
-      expect(injected.length).toBe(0);
-      expect(suggested.length).toBe(1);
-      expect(suggested[0]?.rule.name).toBe("ts-rule");
+      assert.strictEqual(injected.length, 0);
+      assert.strictEqual(suggested.length, 1);
+      assert.strictEqual(suggested[0]?.rule.name, "ts-rule");
     });
 
     test("does not suggest when no files match glob", () => {
@@ -121,7 +122,7 @@ describe("selectRules", () => {
       const session = makeSession({ filePaths: new Set(["style.css"]) });
 
       const { suggested } = selectRules(rules, session);
-      expect(suggested.length).toBe(0);
+      assert.strictEqual(suggested.length, 0);
     });
 
     test("matches directory glob patterns", () => {
@@ -139,7 +140,7 @@ describe("selectRules", () => {
       });
 
       const { suggested } = selectRules(rules, session);
-      expect(suggested.length).toBe(1);
+      assert.strictEqual(suggested.length, 1);
     });
 
     test("matches multiple globs (any match is sufficient)", () => {
@@ -152,7 +153,7 @@ describe("selectRules", () => {
       const session = makeSession({ filePaths: new Set(["App.tsx"]) });
 
       const { suggested } = selectRules(rules, session);
-      expect(suggested.length).toBe(1);
+      assert.strictEqual(suggested.length, 1);
     });
 
     test("does not suggest when session has no files", () => {
@@ -165,7 +166,7 @@ describe("selectRules", () => {
       const session = makeSession();
 
       const { suggested } = selectRules(rules, session);
-      expect(suggested.length).toBe(0);
+      assert.strictEqual(suggested.length, 0);
     });
   });
 
@@ -184,10 +185,10 @@ describe("selectRules", () => {
       const session = makeSession();
 
       const { injected, suggested, available } = selectRules(rules, session);
-      expect(injected.length).toBe(0);
-      expect(suggested.length).toBe(0);
-      expect(available.length).toBe(1);
-      expect(available[0]?.name).toBe("agent-rule");
+      assert.strictEqual(injected.length, 0);
+      assert.strictEqual(suggested.length, 0);
+      assert.strictEqual(available.length, 1);
+      assert.strictEqual(available[0]?.name, "agent-rule");
     });
   });
 
@@ -204,8 +205,8 @@ describe("selectRules", () => {
       });
 
       const { injected } = selectRules(rules, session);
-      expect(injected.length).toBe(1);
-      expect(injected[0]?.reason).toBe("@mentioned by user");
+      assert.strictEqual(injected.length, 1);
+      assert.strictEqual(injected[0]?.reason, "@mentioned by user");
     });
 
     test("does not inject manual rule without @-mention", () => {
@@ -218,7 +219,7 @@ describe("selectRules", () => {
       const session = makeSession({ lastUserMessage: "Do some work" });
 
       const { injected } = selectRules(rules, session);
-      expect(injected.length).toBe(0);
+      assert.strictEqual(injected.length, 0);
     });
 
     test("@-mention can inject any rule mode (overrides)", () => {
@@ -237,8 +238,8 @@ describe("selectRules", () => {
       });
 
       const { injected } = selectRules(rules, session);
-      expect(injected.length).toBe(1);
-      expect(injected[0]?.rule.name).toBe("agent-rule");
+      assert.strictEqual(injected.length, 1);
+      assert.strictEqual(injected[0]?.rule.name, "agent-rule");
     });
 
     test("@-mention overrides glob rules to inject", () => {
@@ -254,8 +255,8 @@ describe("selectRules", () => {
 
       // @-mentioned: goes to injected (not suggested)
       const { injected, suggested } = selectRules(rules, session);
-      expect(injected.length).toBe(1);
-      expect(suggested.length).toBe(0);
+      assert.strictEqual(injected.length, 1);
+      assert.strictEqual(suggested.length, 0);
     });
 
     test("handles multiple @-mentions", () => {
@@ -274,7 +275,7 @@ describe("selectRules", () => {
       });
 
       const { injected } = selectRules(rules, session);
-      expect(injected.length).toBe(2);
+      assert.strictEqual(injected.length, 2);
     });
 
     test("ignores @-mention for non-existent rules", () => {
@@ -289,7 +290,7 @@ describe("selectRules", () => {
       });
 
       const { injected } = selectRules(rules, session);
-      expect(injected.length).toBe(0);
+      assert.strictEqual(injected.length, 0);
     });
   });
 
@@ -308,8 +309,8 @@ describe("selectRules", () => {
 
       // @-mention wins, appears in injected once
       const { injected, suggested } = selectRules(rules, session);
-      expect(injected.length).toBe(1);
-      expect(suggested.length).toBe(0);
+      assert.strictEqual(injected.length, 1);
+      assert.strictEqual(suggested.length, 0);
     });
   });
 
@@ -350,16 +351,16 @@ describe("selectRules", () => {
       const { injected, suggested, available } = selectRules(rules, session);
 
       // always → injected
-      expect(injected.length).toBe(1);
-      expect(injected[0]?.rule.name).toBe("always");
+      assert.strictEqual(injected.length, 1);
+      assert.strictEqual(injected[0]?.rule.name, "always");
 
       // ts-glob → suggested (css-glob not matched)
-      expect(suggested.length).toBe(1);
-      expect(suggested[0]?.rule.name).toBe("ts-glob");
+      assert.strictEqual(suggested.length, 1);
+      assert.strictEqual(suggested[0]?.rule.name, "ts-glob");
 
       // agent-desc → available
-      expect(available.length).toBe(1);
-      expect(available[0]?.name).toBe("agent-desc");
+      assert.strictEqual(available.length, 1);
+      assert.strictEqual(available[0]?.name, "agent-desc");
 
       // manual-only → nowhere (not @-mentioned)
     });
@@ -369,7 +370,7 @@ describe("selectRules", () => {
 describe("formatSystemPromptSection", () => {
   test("returns empty string when no rules at all", () => {
     const result = formatSystemPromptSection([], [], []);
-    expect(result).toBe("");
+    assert.strictEqual(result, "");
   });
 
   test("formats injected project rules with full content", () => {
@@ -391,11 +392,11 @@ describe("formatSystemPromptSection", () => {
 
     const result = formatSystemPromptSection(injected, [], []);
 
-    expect(result).toContain("<rules>");
-    expect(result).toContain("</rules>");
-    expect(result).toContain("<project_rules");
-    expect(result).toContain("ts-standards");
-    expect(result).toContain("Use strict mode.");
+    assert.ok(result.includes("<rules>"));
+    assert.ok(result.includes("</rules>"));
+    assert.ok(result.includes("<project_rules"));
+    assert.ok(result.includes("ts-standards"));
+    assert.ok(result.includes("Use strict mode."));
   });
 
   test("formats injected user rules with full content", () => {
@@ -412,8 +413,8 @@ describe("formatSystemPromptSection", () => {
 
     const result = formatSystemPromptSection(injected, [], []);
 
-    expect(result).toContain("<user_rules");
-    expect(result).toContain("Prefer Bun over Node.");
+    assert.ok(result.includes("<user_rules"));
+    assert.ok(result.includes("Prefer Bun over Node."));
   });
 
   test("formats suggested rules with path (no full content)", () => {
@@ -435,12 +436,12 @@ describe("formatSystemPromptSection", () => {
 
     const result = formatSystemPromptSection([], suggested, []);
 
-    expect(result).toContain("<suggested_rules");
-    expect(result).toContain("ts-patterns");
-    expect(result).toContain("/project/.opencode/rules/ts-patterns.mdc");
-    expect(result).toContain("glob match");
+    assert.ok(result.includes("<suggested_rules"));
+    assert.ok(result.includes("ts-patterns"));
+    assert.ok(result.includes("/project/.opencode/rules/ts-patterns.mdc"));
+    assert.ok(result.includes("glob match"));
     // Full body should NOT be included
-    expect(result).not.toContain("This should NOT appear in output.");
+    assert.ok(!result.includes("This should NOT appear in output."));
   });
 
   test("formats available rules with path (no full content)", () => {
@@ -458,10 +459,10 @@ describe("formatSystemPromptSection", () => {
 
     const result = formatSystemPromptSection([], [], available);
 
-    expect(result).toContain("<available_rules");
-    expect(result).toContain("react-patterns");
-    expect(result).toContain("React best practices");
-    expect(result).toContain("/project/.opencode/rules/react-patterns.mdc");
+    assert.ok(result.includes("<available_rules"));
+    assert.ok(result.includes("react-patterns"));
+    assert.ok(result.includes("React best practices"));
+    assert.ok(result.includes("/project/.opencode/rules/react-patterns.mdc"));
   });
 
   test("separates project and user injected rules in output", () => {
@@ -486,11 +487,11 @@ describe("formatSystemPromptSection", () => {
 
     const result = formatSystemPromptSection(injected, [], []);
 
-    expect(result).toContain("<user_rules");
-    expect(result).toContain("<project_rules");
+    assert.ok(result.includes("<user_rules"));
+    assert.ok(result.includes("<project_rules"));
     const userIdx = result.indexOf("<user_rules");
     const projIdx = result.indexOf("<project_rules");
-    expect(userIdx).toBeLessThan(projIdx);
+    assert.ok(userIdx < projIdx);
   });
 
   test("includes all three tiers when all present", () => {
@@ -529,11 +530,11 @@ describe("formatSystemPromptSection", () => {
 
     const result = formatSystemPromptSection(injected, suggested, available);
 
-    expect(result).toContain("<project_rules");
-    expect(result).toContain("Always content.");
-    expect(result).toContain("<suggested_rules");
-    expect(result).toContain("glob-rule.mdc");
-    expect(result).toContain("<available_rules");
-    expect(result).toContain("desc-rule.mdc");
+    assert.ok(result.includes("<project_rules"));
+    assert.ok(result.includes("Always content."));
+    assert.ok(result.includes("<suggested_rules"));
+    assert.ok(result.includes("glob-rule.mdc"));
+    assert.ok(result.includes("<available_rules"));
+    assert.ok(result.includes("desc-rule.mdc"));
   });
 });

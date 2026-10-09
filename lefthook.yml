@@ -3,12 +3,12 @@ pre-commit:
   commands:
     biome-check:
       glob: "*.{ts}"
-      run: bunx biome check --write --staged --no-errors-on-unmatched {staged_files}
+      run: npx biome check --write --staged --no-errors-on-unmatched {staged_files}
     biome-format:
       glob: "*.{ts}"
-      run: bunx biome format --write --staged --no-errors-on-unmatched {staged_files}
+      run: npx biome format --write --staged --no-errors-on-unmatched {staged_files}
 
 commit-msg:
   commands:
     commitlint:
-      run: bunx commitlint --edit {1}
+      run: npx commitlint --edit {1}

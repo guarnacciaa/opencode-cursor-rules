@@ -1,13 +1,20 @@
-import { stat } from "node:fs/promises";
-import { basename } from "node:path";
-import { parseMdc } from "./parser";
-import type { CacheEntry, Rule, RuleSource } from "./types";
+import type { Dirent } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { parseMdc } from "./parser.ts";
+import type { CacheEntry, Rule, RuleSource } from "./types.ts";
+
+/** Rule file extensions recognized by the loader. */
+const RULE_EXTENSIONS = new Set([".mdc", ".md"]);
 
 /**
  * RuleLoader discovers and caches rules from disk.
  *
- * Uses mtime-based cache invalidation: on each load, files are stat'd
- * and only re-parsed if mtime has changed. No file watchers needed.
+ * Uses mtime+size based cache invalidation: on each load, files are stat'd
+ * and only re-parsed if mtime or size has changed. No file watchers needed.
+ *
+ * Runtime-agnostic: only Node.js builtins are used, so the loader works
+ * under Node, Bun, and any OpenCode v2 host runtime.
  */
 export class RuleLoader {
   private cache = new Map<string, CacheEntry>();
@@ -15,7 +22,7 @@ export class RuleLoader {
   /**
    * Load all rules from both user-level and project-level directories.
    *
-   * @param userRulesDir   Absolute path to user rules (e.g. ~/.config/opencode/rules)
+   * @param userRulesDir    Absolute path to user rules (e.g. ~/.config/opencode/rules)
    * @param projectRulesDir Absolute path to project rules (e.g. <worktree>/.opencode/rules)
    * @param legacyFilePath  Absolute path to legacy .cursorrules file (optional)
    * @returns Array of rules, project rules taking precedence over user rules
@@ -51,6 +58,7 @@ export class RuleLoader {
       }
     }
 
+    this.evictStaleEntries();
     return Array.from(rulesByName.values());
   }
 
@@ -79,55 +87,63 @@ export class RuleLoader {
   }
 
   /**
-   * Scan directory for .mdc and .md files using Bun.Glob.
+   * Scan a directory for top-level .mdc and .md files.
+   * Follows symlinks (both file and directory level).
    */
   private async scanRuleFiles(dir: string): Promise<string[]> {
-    // Check directory exists
+    let entries: Dirent[];
     try {
       const s = await stat(dir);
       if (!s.isDirectory()) return [];
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return [];
     }
 
     const paths: string[] = [];
-    const glob = new Bun.Glob("*.{mdc,md}");
-
-    for await (const file of glob.scan({
-      cwd: dir,
-      absolute: true,
-      followSymlinks: true,
-    })) {
-      paths.push(file);
+    for (const entry of entries) {
+      // Skip hidden files and subdirectories (rules live at the top level)
+      if (entry.name.startsWith(".")) continue;
+      if (!(entry.isFile() || entry.isSymbolicLink())) continue;
+      const dotIdx = entry.name.lastIndexOf(".");
+      const ext = dotIdx > 0 ? entry.name.slice(dotIdx).toLowerCase() : "";
+      if (!RULE_EXTENSIONS.has(ext)) continue;
+      paths.push(join(dir, entry.name));
     }
 
-    return paths;
+    return paths.sort();
   }
 
   /**
-   * Load a single rule file with mtime-based caching.
+   * Load a single rule file with mtime+size based caching.
    */
   private async loadSingleFile(filePath: string, source: RuleSource): Promise<Rule | null> {
     let mtimeMs: number;
+    let size: number;
     try {
       const s = await stat(filePath);
+      if (!s.isFile()) {
+        this.cache.delete(filePath);
+        return null;
+      }
       mtimeMs = s.mtimeMs;
+      size = s.size;
     } catch {
       // File doesn't exist or broken symlink
       this.cache.delete(filePath);
       return null;
     }
 
-    // Check cache
+    // Check cache (mtime + size guard against coarse timestamp resolution)
     const cached = this.cache.get(filePath);
-    if (cached && cached.mtimeMs === mtimeMs) {
-      return cached.rule;
+    if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+      if (cached.source === source) return cached.rule;
     }
 
     // Parse file
     let raw: string;
     try {
-      raw = await Bun.file(filePath).text();
+      raw = await readFile(filePath, "utf-8");
     } catch {
       this.cache.delete(filePath);
       return null;
@@ -149,7 +165,7 @@ export class RuleLoader {
       body,
     };
 
-    this.cache.set(filePath, { rule, mtimeMs });
+    this.cache.set(filePath, { rule, mtimeMs, size, source });
     return rule;
   }
 
@@ -158,21 +174,24 @@ export class RuleLoader {
    */
   private async loadLegacyFile(filePath: string): Promise<Rule | null> {
     let mtimeMs: number;
+    let size: number;
     try {
       const s = await stat(filePath);
+      if (!s.isFile()) return null;
       mtimeMs = s.mtimeMs;
+      size = s.size;
     } catch {
       return null;
     }
 
     const cached = this.cache.get(filePath);
-    if (cached && cached.mtimeMs === mtimeMs) {
+    if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
       return cached.rule;
     }
 
     let raw: string;
     try {
-      raw = await Bun.file(filePath).text();
+      raw = await readFile(filePath, "utf-8");
     } catch {
       return null;
     }
@@ -190,8 +209,27 @@ export class RuleLoader {
       body: raw,
     };
 
-    this.cache.set(filePath, { rule, mtimeMs });
+    this.cache.set(filePath, { rule, mtimeMs, size, source: "legacy" });
     return rule;
+  }
+
+  /**
+   * Drop cache entries whose files no longer exist or are no longer files.
+   * Keeps memory bounded when rules are deleted between loads.
+   */
+  private evictStaleEntries(): void {
+    if (this.cache.size === 0) return;
+    const paths = Array.from(this.cache.keys());
+    void Promise.all(
+      paths.map(async (filePath) => {
+        try {
+          const s = await stat(filePath);
+          if (!s.isFile()) this.cache.delete(filePath);
+        } catch {
+          this.cache.delete(filePath);
+        }
+      }),
+    );
   }
 
   /**

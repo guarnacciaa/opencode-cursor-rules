@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import picomatch from "picomatch";
-import type { MatchedRule, Rule, RuleMode, SessionState } from "./types";
+import type { MatchedRule, Rule, RuleMode, SessionState } from "./types.ts";
 
 /**
  * Determine the application mode of a rule based on its frontmatter.

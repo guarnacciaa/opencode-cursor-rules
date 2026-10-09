@@ -1,16 +1,21 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { RuleLoader } from "../src/loader";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { RuleLoader } from "../src/loader.ts";
+import { parseMdc } from "../src/parser.ts";
 import {
   createProjectRule,
   createUserRule,
   getProjectRulesDir,
   getUserRulesDir,
   listRules,
-} from "../src/tools";
+} from "../src/tools.ts";
+import type { Rule } from "../src/types.ts";
 
-const FIXTURES_DIR = join(import.meta.dir, "fixtures", "tools-test");
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const FIXTURES_DIR = join(TEST_DIR, "fixtures", "tools-test");
 const TEST_USER_RULES = join(FIXTURES_DIR, "user-rules");
 const TEST_PROJECT_RULES = join(FIXTURES_DIR, "project-rules");
 
@@ -21,6 +26,8 @@ describe("tools", () => {
   beforeEach(() => {
     // Store original XDG_CONFIG_HOME
     originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    // Hermetic XDG: point user rules into fixtures, never the real home dir
+    process.env.XDG_CONFIG_HOME = join(FIXTURES_DIR, "config");
 
     // Clean up and create test directories
     rmSync(FIXTURES_DIR, { recursive: true, force: true });
@@ -50,16 +57,21 @@ describe("tools", () => {
         false,
       );
 
-      expect(result.success).toBe(true);
-      expect(result.filePath).toBeDefined();
-      expect(result.filePath?.endsWith("test-rule.mdc")).toBe(true);
-      expect(existsSync(result.filePath!)).toBe(true);
+      assert.strictEqual(result.success, true);
+      assert.notStrictEqual(result.filePath, undefined);
+      assert.ok(result.filePath?.endsWith("test-rule.mdc"));
+      assert.ok(existsSync(result.filePath!));
 
       const content = readFileSync(result.filePath!, "utf-8");
-      expect(content).toContain('description: "Test rule description"');
-      expect(content).toContain('globs: "**/*.ts"');
-      expect(content).toContain("This is the rule content.");
-      expect(content).not.toContain("alwaysApply");
+      assert.ok(content.includes("Test rule description"));
+      assert.ok(content.includes("**/*.ts"));
+      assert.ok(content.includes("This is the rule content."));
+      assert.ok(!content.includes("alwaysApply"));
+
+      const parsed = parseMdc(content);
+      assert.strictEqual(parsed.frontmatter.description, "Test rule description");
+      assert.deepStrictEqual(parsed.frontmatter.globs, ["**/*.ts"]);
+      assert.strictEqual(parsed.frontmatter.alwaysApply, false);
     });
 
     test("creates rule with alwaysApply set to true", async () => {
@@ -71,10 +83,14 @@ describe("tools", () => {
         true,
       );
 
-      expect(result.success).toBe(true);
+      assert.strictEqual(result.success, true);
 
       const content = readFileSync(result.filePath!, "utf-8");
-      expect(content).toContain("alwaysApply: true");
+      assert.ok(content.includes("alwaysApply: true"));
+
+      const parsed = parseMdc(content);
+      assert.strictEqual(parsed.frontmatter.description, "Always apply rule");
+      assert.strictEqual(parsed.frontmatter.alwaysApply, true);
     });
 
     test("creates rule with multiple globs", async () => {
@@ -86,30 +102,38 @@ describe("tools", () => {
         false,
       );
 
-      expect(result.success).toBe(true);
+      assert.strictEqual(result.success, true);
 
       const content = readFileSync(result.filePath!, "utf-8");
-      expect(content).toContain("globs:");
-      expect(content).toContain('  - "**/*.ts"');
-      expect(content).toContain('  - "**/*.tsx"');
+      assert.ok(content.includes("globs:"));
+      assert.ok(content.includes("**/*.ts"));
+      assert.ok(content.includes("**/*.tsx"));
+
+      const parsed = parseMdc(content);
+      assert.deepStrictEqual(parsed.frontmatter.globs, ["**/*.ts", "**/*.tsx"]);
     });
 
     test("creates rule without globs or alwaysApply", async () => {
       const result = await createUserRule("simple-rule", "Simple rule", "Simple content.");
 
-      expect(result.success).toBe(true);
+      assert.strictEqual(result.success, true);
 
       const content = readFileSync(result.filePath!, "utf-8");
-      expect(content).toContain('description: "Simple rule"');
-      expect(content).not.toContain("globs");
-      expect(content).not.toContain("alwaysApply");
+      assert.ok(content.includes("Simple rule"));
+      assert.ok(!content.includes("globs"));
+      assert.ok(!content.includes("alwaysApply"));
+
+      const parsed = parseMdc(content);
+      assert.strictEqual(parsed.frontmatter.description, "Simple rule");
+      assert.deepStrictEqual(parsed.frontmatter.globs, []);
+      assert.strictEqual(parsed.frontmatter.alwaysApply, false);
     });
 
     test("sanitizes rule names", async () => {
       const result = await createUserRule("My Special Rule!", "Description", "Content.");
 
-      expect(result.success).toBe(true);
-      expect(result.filePath?.endsWith("my-special-rule.mdc")).toBe(true);
+      assert.strictEqual(result.success, true);
+      assert.ok(result.filePath?.endsWith("my-special-rule.mdc"));
     });
 
     test("creates directory if it doesn't exist", async () => {
@@ -118,8 +142,8 @@ describe("tools", () => {
 
       const result = await createUserRule("deep-rule", "Deep rule", "Content.");
 
-      expect(result.success).toBe(true);
-      expect(existsSync(result.filePath!)).toBe(true);
+      assert.strictEqual(result.success, true);
+      assert.ok(existsSync(result.filePath!));
     });
 
     test("handles invalid rule names gracefully", async () => {
@@ -127,8 +151,8 @@ describe("tools", () => {
 
       const result = await createUserRule("!!!@@@###$$$", "Invalid rule", "Content");
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain("Invalid rule name");
+      assert.strictEqual(result.success, false);
+      assert.ok(result.message.includes("Invalid rule name"));
     });
 
     test("handles file write errors gracefully", async () => {
@@ -139,8 +163,8 @@ describe("tools", () => {
 
       const result = await createUserRule("error-test", "Error test", "Content");
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain("Failed to create user rule");
+      assert.strictEqual(result.success, false);
+      assert.ok(result.message.includes("Failed to create user rule"));
     });
 
     test("sanitizes rule names with special characters", async () => {
@@ -152,8 +176,8 @@ describe("tools", () => {
         "Content",
       );
 
-      expect(result.success).toBe(true);
-      expect(result.filePath).toContain("my-rule-with-spaces-specialchars.mdc");
+      assert.strictEqual(result.success, true);
+      assert.ok(result.filePath?.includes("my-rule-with-spaces-specialchars.mdc"));
     });
 
     test("returns success message with correct rule name", async () => {
@@ -161,10 +185,10 @@ describe("tools", () => {
 
       const result = await createUserRule("success-test", "Success test", "Content");
 
-      expect(result.success).toBe(true);
-      expect(result.message).toContain("Created user-level rule");
-      expect(result.message).toContain("success-test");
-      expect(result.filePath).toBeDefined();
+      assert.strictEqual(result.success, true);
+      assert.ok(result.message.includes("Created user-level rule"));
+      assert.ok(result.message.includes("success-test"));
+      assert.notStrictEqual(result.filePath, undefined);
     });
   });
 
@@ -178,10 +202,15 @@ describe("tools", () => {
         false,
       );
 
-      expect(result.success).toBe(true);
-      expect(result.filePath).toBeDefined();
-      expect(result.filePath?.includes(".opencode/rules")).toBe(true);
-      expect(existsSync(result.filePath!)).toBe(true);
+      assert.strictEqual(result.success, true);
+      assert.notStrictEqual(result.filePath, undefined);
+      assert.ok(result.filePath?.includes(".opencode/rules"));
+      assert.ok(existsSync(result.filePath!));
+
+      const content = readFileSync(result.filePath!, "utf-8");
+      const parsed = parseMdc(content);
+      assert.strictEqual(parsed.frontmatter.description, "Project rule description");
+      assert.deepStrictEqual(parsed.frontmatter.globs, ["**/*.js"]);
     });
 
     test("uses provided worktree directory", async () => {
@@ -199,8 +228,8 @@ describe("tools", () => {
         customWorktree,
       );
 
-      expect(result.success).toBe(true);
-      expect(result.filePath?.includes(customWorktree)).toBe(true);
+      assert.strictEqual(result.success, true);
+      assert.ok(result.filePath?.includes(customWorktree));
     });
 
     test("creates .opencode/rules/ directory structure if needed", async () => {
@@ -216,9 +245,9 @@ describe("tools", () => {
         freshProjectDir,
       );
 
-      expect(result.success).toBe(true);
-      expect(existsSync(join(freshProjectDir, ".opencode", "rules"))).toBe(true);
-      expect(existsSync(result.filePath!)).toBe(true);
+      assert.strictEqual(result.success, true);
+      assert.ok(existsSync(join(freshProjectDir, ".opencode", "rules")));
+      assert.ok(existsSync(result.filePath!));
     });
 
     test("sanitizes project rule names correctly", async () => {
@@ -231,8 +260,8 @@ describe("tools", () => {
         FIXTURES_DIR,
       );
 
-      expect(result.success).toBe(true);
-      expect(result.filePath).toContain("my-project-rule.mdc");
+      assert.strictEqual(result.success, true);
+      assert.ok(result.filePath?.includes("my-project-rule.mdc"));
     });
 
     test("handles file write errors gracefully for project rules", async () => {
@@ -249,8 +278,8 @@ describe("tools", () => {
         blockingPath,
       );
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain("Failed to create project rule");
+      assert.strictEqual(result.success, false);
+      assert.ok(result.message.includes("Failed to create project rule"));
     });
 
     test("combines globs and alwaysApply for project rules", async () => {
@@ -263,14 +292,19 @@ describe("tools", () => {
         FIXTURES_DIR,
       );
 
-      expect(result.success).toBe(true);
+      assert.strictEqual(result.success, true);
 
       const content = readFileSync(result.filePath!, "utf-8");
-      expect(content).toContain("globs:");
-      expect(content).toContain('- "src/**/*.ts"');
-      expect(content).toContain('- "lib/**/*.ts"');
-      expect(content).toContain("alwaysApply: true");
-      expect(content).toContain('description: "Combined rule"');
+      assert.ok(content.includes("globs:"));
+      assert.ok(content.includes("src/**/*.ts"));
+      assert.ok(content.includes("lib/**/*.ts"));
+      assert.ok(content.includes("alwaysApply: true"));
+      assert.ok(content.includes("Combined rule"));
+
+      const parsed = parseMdc(content);
+      assert.strictEqual(parsed.frontmatter.description, "Combined rule");
+      assert.deepStrictEqual(parsed.frontmatter.globs, ["src/**/*.ts", "lib/**/*.ts"]);
+      assert.strictEqual(parsed.frontmatter.alwaysApply, true);
     });
 
     test("returns success message with correct project rule name", async () => {
@@ -283,116 +317,116 @@ describe("tools", () => {
         FIXTURES_DIR,
       );
 
-      expect(result.success).toBe(true);
-      expect(result.message).toContain("Created project-level rule");
-      expect(result.message).toContain("success-project-rule");
+      assert.strictEqual(result.success, true);
+      assert.ok(result.message.includes("Created project-level rule"));
+      assert.ok(result.message.includes("success-project-rule"));
     });
   });
 
   describe("listRules", () => {
     test("returns formatted list of all rules", async () => {
       // Mock the loadAll method to return test rules
-      const mockRules = [
+      const mockRules: Rule[] = [
         {
           name: "user-rule",
-          filePath: "/user/rules/user-rule.mdc",
+          sourcePath: "/user/rules/user-rule.mdc",
           frontmatter: {
             description: "User rule",
             globs: [],
             alwaysApply: true,
           },
-          content: "User content",
-          source: "user" as const,
+          body: "User content",
+          source: "user",
         },
         {
           name: "project-rule",
-          filePath: "/project/.opencode/rules/project-rule.mdc",
+          sourcePath: "/project/.opencode/rules/project-rule.mdc",
           frontmatter: {
             description: "Project rule",
             globs: ["**/*.ts"],
             alwaysApply: false,
           },
-          content: "Project content",
-          source: "project" as const,
+          body: "Project content",
+          source: "project",
         },
         {
           name: "agent-rule",
-          filePath: "/user/rules/agent-rule.mdc",
+          sourcePath: "/user/rules/agent-rule.mdc",
           frontmatter: {
             description: "Agent rule description",
             globs: [],
             alwaysApply: false,
           },
-          content: "Agent content",
-          source: "user" as const,
+          body: "Agent content",
+          source: "user",
         },
         {
           name: "manual-rule",
-          filePath: "/user/rules/manual-rule.mdc",
+          sourcePath: "/user/rules/manual-rule.mdc",
           frontmatter: {
             description: "",
             globs: [],
             alwaysApply: false,
           },
-          content: "Manual content",
-          source: "user" as const,
+          body: "Manual content",
+          source: "user",
         },
       ];
 
       const mockLoader = {
-        loadAll: async () => mockRules,
+        loadAll: async (): Promise<Rule[]> => mockRules,
       };
 
-      const result = await listRules(TEST_USER_RULES, TEST_PROJECT_RULES, null, mockLoader as any);
+      const result = await listRules(TEST_USER_RULES, TEST_PROJECT_RULES, null, mockLoader);
 
-      expect(result.success).toBe(true);
-      expect(result.rules).toBeDefined();
-      expect(result.rules?.length).toBe(4);
+      assert.strictEqual(result.success, true);
+      assert.notStrictEqual(result.rules, undefined);
+      assert.strictEqual(result.rules?.length, 4);
 
       // Check user rules
       const userRules = result.rules?.filter((r) => r.source === "user");
-      expect(userRules?.length).toBe(3);
+      assert.strictEqual(userRules?.length, 3);
 
       // Check project rules
       const projectRules = result.rules?.filter((r) => r.source === "project");
-      expect(projectRules?.length).toBe(1);
+      assert.strictEqual(projectRules?.length, 1);
 
       // Check mode badges
       const alwaysRule = result.rules?.find((r) => r.name === "user-rule");
-      expect(alwaysRule?.mode).toContain("always");
+      assert.ok(alwaysRule?.mode.includes("always"));
 
       const globRule = result.rules?.find((r) => r.name === "project-rule");
-      expect(globRule?.mode).toContain("glob");
+      assert.ok(globRule?.mode.includes("glob"));
 
       const agentRule = result.rules?.find((r) => r.name === "agent-rule");
-      expect(agentRule?.mode).toContain("agent");
+      assert.ok(agentRule?.mode.includes("agent"));
 
       const manualRule = result.rules?.find((r) => r.name === "manual-rule");
-      expect(manualRule?.mode).toContain("manual");
+      assert.ok(manualRule?.mode.includes("manual"));
     });
 
     test("handles empty rules list", async () => {
       const mockLoader = {
-        loadAll: async () => [],
+        loadAll: async (): Promise<Rule[]> => [],
       };
 
-      const result = await listRules(TEST_USER_RULES, TEST_PROJECT_RULES, null, mockLoader as any);
+      const result = await listRules(TEST_USER_RULES, TEST_PROJECT_RULES, null, mockLoader);
 
-      expect(result.success).toBe(true);
-      expect(result.rules).toEqual([]);
+      assert.strictEqual(result.success, true);
+      assert.deepStrictEqual(result.rules, []);
     });
 
     test("handles loader errors", async () => {
       const mockLoader = {
-        loadAll: async () => {
+        loadAll: async (): Promise<Rule[]> => {
           throw new Error("Loader failed");
         },
       };
 
-      const result = await listRules(TEST_USER_RULES, TEST_PROJECT_RULES, null, mockLoader as any);
+      const result = await listRules(TEST_USER_RULES, TEST_PROJECT_RULES, null, mockLoader);
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain("Failed to list rules");
+      assert.strictEqual(result.success, false);
+      assert.ok(result.message.includes("Failed to list rules"));
     });
 
     test("groups rules by source with real loader (user, project, legacy)", async () => {
@@ -427,21 +461,21 @@ Project content.`,
 
       const result = await listRules(userRulesDir, projectRulesDir, legacyFile, realLoader);
 
-      expect(result.success).toBe(true);
-      expect(result.rules).toBeDefined();
-      expect(result.rules?.length).toBe(3);
+      assert.strictEqual(result.success, true);
+      assert.notStrictEqual(result.rules, undefined);
+      assert.strictEqual(result.rules?.length, 3);
 
       const rules = result.rules!;
       // Verify order: user first, then project, then legacy
-      expect(rules.length).toBeGreaterThanOrEqual(3);
-      expect(rules[0]?.source).toBe("user");
-      expect(rules[0]?.name).toBe("user-rule");
+      assert.ok(rules.length >= 3);
+      assert.strictEqual(rules[0]?.source, "user");
+      assert.strictEqual(rules[0]?.name, "user-rule");
 
-      expect(rules[1]?.source).toBe("project");
-      expect(rules[1]?.name).toBe("project-rule");
+      assert.strictEqual(rules[1]?.source, "project");
+      assert.strictEqual(rules[1]?.name, "project-rule");
 
-      expect(rules[2]?.source).toBe("legacy");
-      expect(rules[2]?.name).toBe(".cursorrules");
+      assert.strictEqual(rules[2]?.source, "legacy");
+      assert.strictEqual(rules[2]?.name, ".cursorrules");
     });
 
     test("correctly identifies all mode badges with real loader", async () => {
@@ -488,9 +522,9 @@ Manual content.`,
 
       const result = await listRules("", rulesDir, null, realLoader);
 
-      expect(result.success).toBe(true);
-      expect(result.rules).toBeDefined();
-      expect(result.rules?.length).toBe(4);
+      assert.strictEqual(result.success, true);
+      assert.notStrictEqual(result.rules, undefined);
+      assert.strictEqual(result.rules?.length, 4);
 
       const rules = result.rules!;
       const alwaysRule = rules.find((r) => r.name === "always-rule");
@@ -498,20 +532,20 @@ Manual content.`,
       const agentRule = rules.find((r) => r.name === "agent-rule");
       const manualRule = rules.find((r) => r.name === "manual-rule");
 
-      expect(alwaysRule).toBeDefined();
-      expect(alwaysRule?.mode).toBe("always");
-      expect(alwaysRule?.alwaysApply).toBe(true);
+      assert.notStrictEqual(alwaysRule, undefined);
+      assert.strictEqual(alwaysRule?.mode, "always");
+      assert.strictEqual(alwaysRule?.alwaysApply, true);
 
-      expect(globRule).toBeDefined();
-      expect(globRule?.mode).toBe("glob");
-      expect(globRule?.globs).toEqual(["*.ts"]);
+      assert.notStrictEqual(globRule, undefined);
+      assert.strictEqual(globRule?.mode, "glob");
+      assert.deepStrictEqual(globRule?.globs, ["*.ts"]);
 
-      expect(agentRule).toBeDefined();
-      expect(agentRule?.mode).toBe("agent");
-      expect(agentRule?.description).toBe("Agent rule");
+      assert.notStrictEqual(agentRule, undefined);
+      assert.strictEqual(agentRule?.mode, "agent");
+      assert.strictEqual(agentRule?.description, "Agent rule");
 
-      expect(manualRule).toBeDefined();
-      expect(manualRule?.mode).toBe("manual");
+      assert.notStrictEqual(manualRule, undefined);
+      assert.strictEqual(manualRule?.mode, "manual");
     });
 
     test("correctly handles multiple globs with real loader", async () => {
@@ -533,14 +567,14 @@ Multi glob content.`,
 
       const result = await listRules("", rulesDir, null, realLoader);
 
-      expect(result.success).toBe(true);
-      expect(result.rules).toBeDefined();
-      expect(result.rules?.length).toBe(1);
+      assert.strictEqual(result.success, true);
+      assert.notStrictEqual(result.rules, undefined);
+      assert.strictEqual(result.rules?.length, 1);
 
       const rule = result.rules?.[0]!;
-      expect(rule.name).toBe("multiglob-rule");
-      expect(rule.mode).toBe("glob");
-      expect(rule.globs).toEqual(["*.ts", "*.tsx", "*.js"]);
+      assert.strictEqual(rule.name, "multiglob-rule");
+      assert.strictEqual(rule.mode, "glob");
+      assert.deepStrictEqual(rule.globs, ["*.ts", "*.tsx", "*.js"]);
     });
 
     test("includes correct file paths in output", async () => {
@@ -558,13 +592,13 @@ Content.`,
 
       const result = await listRules("", rulesDir, null, realLoader);
 
-      expect(result.success).toBe(true);
-      expect(result.rules).toBeDefined();
-      expect(result.rules?.length).toBe(1);
+      assert.strictEqual(result.success, true);
+      assert.notStrictEqual(result.rules, undefined);
+      assert.strictEqual(result.rules?.length, 1);
 
       const rule = result.rules?.[0]!;
-      expect(rule.filePath).toContain("path-test-rule.mdc");
-      expect(rule.filePath).toContain("paths-test");
+      assert.ok(rule.filePath.includes("path-test-rule.mdc"));
+      assert.ok(rule.filePath.includes("paths-test"));
     });
 
     test("handles legacy .cursorrules file correctly", async () => {
@@ -577,17 +611,17 @@ Content.`,
 
       const result = await listRules("", "", legacyFile, realLoader);
 
-      expect(result.success).toBe(true);
-      expect(result.rules).toBeDefined();
-      expect(result.rules?.length).toBe(1);
+      assert.strictEqual(result.success, true);
+      assert.notStrictEqual(result.rules, undefined);
+      assert.strictEqual(result.rules?.length, 1);
 
       const legacyRule = result.rules?.[0]!;
-      expect(legacyRule.name).toBe(".cursorrules");
-      expect(legacyRule.source).toBe("legacy");
-      expect(legacyRule.mode).toBe("always");
-      expect(legacyRule.alwaysApply).toBe(true);
-      expect(legacyRule.globs).toEqual([]);
-      expect(legacyRule.filePath).toBe(legacyFile);
+      assert.strictEqual(legacyRule.name, ".cursorrules");
+      assert.strictEqual(legacyRule.source, "legacy");
+      assert.strictEqual(legacyRule.mode, "always");
+      assert.strictEqual(legacyRule.alwaysApply, true);
+      assert.deepStrictEqual(legacyRule.globs, []);
+      assert.strictEqual(legacyRule.filePath, legacyFile);
     });
   });
 
@@ -598,7 +632,7 @@ Content.`,
 
       try {
         const dir = getUserRulesDir();
-        expect(dir).toContain(".config/opencode/rules");
+        assert.ok(dir.includes(".config/opencode/rules"));
       } finally {
         if (originalEnv) {
           process.env.XDG_CONFIG_HOME = originalEnv;
@@ -612,7 +646,7 @@ Content.`,
 
       try {
         const dir = getUserRulesDir();
-        expect(dir).toBe("/custom/config/opencode/rules");
+        assert.strictEqual(dir, "/custom/config/opencode/rules");
       } finally {
         if (originalEnv) {
           process.env.XDG_CONFIG_HOME = originalEnv;
@@ -626,12 +660,12 @@ Content.`,
   describe("getProjectRulesDir", () => {
     test("returns default path in current directory", () => {
       const dir = getProjectRulesDir();
-      expect(dir).toContain(".opencode/rules");
+      assert.ok(dir.includes(".opencode/rules"));
     });
 
     test("uses provided worktree", () => {
       const dir = getProjectRulesDir("/custom/project");
-      expect(dir).toBe("/custom/project/.opencode/rules");
+      assert.strictEqual(dir, "/custom/project/.opencode/rules");
     });
   });
 });

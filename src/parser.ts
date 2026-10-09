@@ -1,5 +1,5 @@
 import { parse as parseYaml } from "yaml";
-import type { RuleFrontmatter } from "./types";
+import type { RuleFrontmatter } from "./types.ts";
 
 /**
  * Result of parsing an MDC file's content string.

@@ -1,475 +1,433 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Plugin } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin";
-import { RuleLoader } from "./src/loader";
-import { formatSystemPromptSection, selectRules } from "./src/matcher";
-import { createProjectRule, createUserRule, listRules } from "./src/tools";
-import type { SessionState } from "./src/types";
+import { Plugin } from "@opencode/plugin/effect";
+import { Effect, Schema } from "effect";
+import { RuleLoader } from "./src/loader.ts";
+import { formatSystemPromptSection, selectRules } from "./src/matcher.ts";
+import { createProjectRule, createUserRule, listRules } from "./src/tools.ts";
+import type { SessionState } from "./src/types.ts";
 
-const SERVICE_NAME = "cursor-rules";
+const PLUGIN_ID = "cursor-rules";
+const DEFAULT_MAX_SESSIONS = 100;
+
+/** File-path argument names observed across OpenCode tools. */
+const FILE_PATH_KEYS = ["path", "file_path", "filePath", "file", "target"] as const;
+/** Pattern/directory argument names that carry location context. */
+const LOCATION_KEYS = ["pattern", "glob", "directory", "dir", "cwd"] as const;
 
 /**
- * OpenCode plugin that brings full Cursor rules (.mdc) support to OpenCode.
+ * OpenCode v2 plugin that brings full Cursor rules (.mdc) support to OpenCode.
  *
  * Reads rules from:
  * - User level:    ~/.config/opencode/rules/
- * - Project level: <worktree>/.opencode/rules/
- * - Legacy:        <worktree>/.cursorrules
+ * - Project level: <project>/.opencode/rules/
+ * - Legacy:        <project>/.cursorrules
  *
  * Supports all four Cursor rule modes:
  * - Always apply (alwaysApply: true)
  * - Auto-attach via glob patterns
  * - Agent-requested via description
  * - Manual via @rule-name mention
+ *
+ * Optional plugin options (via `plugins: [{ package, options }]`):
+ * - userRulesDir:    override the user rules directory
+ * - projectRulesDir: override the project rules directory
+ * - legacyFilePath:  override the legacy .cursorrules path (null to disable)
+ * - maxSessions:     cap tracked sessions (default 100)
  */
-const CursorRulesPlugin: Plugin = async ({ directory, worktree, client }) => {
-  const loader = new RuleLoader();
-  const sessions = new Map<string, SessionState>();
+export default Plugin.define({
+  id: PLUGIN_ID,
+  effect: (ctx) =>
+    Effect.gen(function* () {
+      const loader = new RuleLoader();
+      const sessions = new Map<string, SessionState>();
+      const options = (ctx.options ?? {}) as Record<string, unknown>;
 
-  // Resolve paths
-  const projectRoot = worktree || directory;
-  const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+      // Resolve paths (location-aware, option-overridable)
+      const projectRoot = String(ctx.location.project?.canonical ?? ctx.location.directory);
+      const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+      const userRulesDir = asString(options.userRulesDir) ?? join(configHome, "opencode", "rules");
+      const projectRulesDir =
+        asString(options.projectRulesDir) ?? join(projectRoot, ".opencode", "rules");
+      const legacyFilePath =
+        options.legacyFilePath === null
+          ? null
+          : (asString(options.legacyFilePath) ?? join(projectRoot, ".cursorrules"));
+      const maxSessions = asPositiveInt(options.maxSessions) ?? DEFAULT_MAX_SESSIONS;
 
-  const userRulesDir = join(configHome, "opencode", "rules");
-  const projectRulesDir = join(projectRoot, ".opencode", "rules");
-  const legacyFilePath = join(projectRoot, ".cursorrules");
-
-  // Log startup info
-  await client.app.log({
-    body: {
-      service: SERVICE_NAME,
-      level: "info",
-      message: "Initializing cursor rules plugin",
-      extra: {
+      yield* Effect.logInfo("Initializing cursor rules plugin", {
         projectRulesDir,
         userRulesDir,
         legacyFilePath,
-      },
-    },
-  });
-
-  // Pre-warm cache (non-blocking, errors caught internally)
-  loader
-    .loadAll(userRulesDir, projectRulesDir, legacyFilePath)
-    .then(async (rules) => {
-      if (rules.length > 0) {
-        await client.app.log({
-          body: {
-            service: SERVICE_NAME,
-            level: "info",
-            message: `Loaded ${rules.length} cursor rule(s)`,
-            extra: {
-              rules: rules.map((r) => ({
-                name: r.name,
-                source: r.source,
-                mode: r.frontmatter.alwaysApply
-                  ? "always"
-                  : r.frontmatter.globs.length > 0
-                    ? "glob"
-                    : r.frontmatter.description
-                      ? "agent"
-                      : "manual",
-              })),
-            },
-          },
-        });
-      } else {
-        await client.app.log({
-          body: {
-            service: SERVICE_NAME,
-            level: "debug",
-            message: "No cursor rules found in any directory",
-          },
-        });
-      }
-    })
-    .catch(async (error) => {
-      await client.app.log({
-        body: {
-          service: SERVICE_NAME,
-          level: "error",
-          message: "Failed to load cursor rules during initialization",
-          extra: {
-            error: error instanceof Error ? error.message : String(error),
-          },
-        },
       });
-    });
 
-  /**
-   * Get or create session state.
-   */
-  function getSession(sessionID: string | undefined): SessionState {
-    const id = sessionID || "__default__";
-    let state = sessions.get(id);
-    if (!state) {
-      state = { filePaths: new Set(), lastUserMessage: "" };
-      sessions.set(id, state);
-
-      // Cap sessions to prevent memory leak (LRU eviction)
-      if (sessions.size > 100) {
-        const firstKey = sessions.keys().next().value;
-        if (firstKey) sessions.delete(firstKey);
-      }
-    }
-    return state;
-  }
-
-  return {
-    /**
-     * Track files accessed by tool calls to enable glob-based rule matching.
-     */
-    "tool.execute.before": async (input, output) => {
-      const session = getSession(input.sessionID);
-
-      // Extract file paths from tool arguments
-      const args = output.args;
-      if (args && typeof args === "object") {
-        // Common file path argument names across OpenCode tools
-        for (const key of ["path", "file_path", "filePath", "file", "target"]) {
-          const val = args[key];
-          if (typeof val === "string" && val.length > 0) {
-            // Normalize to relative path
-            const rel = val.startsWith(projectRoot) ? val.slice(projectRoot.length + 1) : val;
-            session.filePaths.add(rel);
+      /**
+       * Get or create session state (bounded LRU-ish eviction).
+       */
+      const getSession = (sessionID: string): SessionState => {
+        let state = sessions.get(sessionID);
+        if (!state) {
+          state = { filePaths: new Set(), lastUserMessage: "" };
+          sessions.set(sessionID, state);
+          if (sessions.size > maxSessions) {
+            const firstKey = sessions.keys().next().value;
+            if (firstKey !== undefined) sessions.delete(firstKey);
           }
         }
+        return state;
+      };
 
-        // Handle glob/grep patterns (extract directory context)
-        for (const key of ["pattern", "glob", "directory", "dir", "cwd"]) {
-          const val = args[key];
-          if (typeof val === "string" && val.length > 0) {
-            const rel = val.startsWith(projectRoot) ? val.slice(projectRoot.length + 1) : val;
-            session.filePaths.add(rel);
+      const loadRulesSafe = () =>
+        Effect.tryPromise(() => loader.loadAll(userRulesDir, projectRulesDir, legacyFilePath)).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Failed to load cursor rules, continuing without them", {
+              error: error instanceof Error ? error.message : String(error),
+            }).pipe(Effect.as([] as Awaited<ReturnType<typeof loader.loadAll>>)),
+          ),
+        );
+
+      // Pre-warm cache (non-blocking for sessions; failures only logged)
+      const initialRules = yield* loadRulesSafe();
+      if (initialRules.length > 0) {
+        yield* Effect.logInfo(`Loaded ${initialRules.length} cursor rule(s)`);
+      } else {
+        yield* Effect.logDebug("No cursor rules found in any directory");
+      }
+
+      /**
+       * Track files accessed by tool calls to enable glob-based matching.
+       */
+      yield* ctx.tool.hook("execute.before", (event) =>
+        Effect.sync(() => {
+          const session = getSession(String(event.sessionID));
+          collectFilePaths(event.input, projectRoot, session.filePaths);
+        }),
+      );
+
+      /**
+       * Capture user messages for @rule-name mention detection.
+       * Runs before durable prompt admission.
+       */
+      yield* ctx.session.hook("prompt", (event) =>
+        Effect.sync(() => {
+          const session = getSession(String(event.sessionID));
+          const text = event.prompt?.text;
+          if (typeof text === "string") {
+            session.lastUserMessage = text;
           }
-        }
-      }
-    },
+        }),
+      );
 
-    /**
-     * Capture user messages for @rule-name mention detection.
-     */
-    "chat.message": async (input, output) => {
-      const session = getSession(input.sessionID);
+      /**
+       * Inject matching rules into the agent-loop system instructions.
+       * Runs immediately before each model dispatch.
+       */
+      yield* ctx.session.hook("context", (event) =>
+        Effect.gen(function* () {
+          const session = getSession(String(event.sessionID));
+          const rules = yield* loadRulesSafe();
+          if (rules.length === 0) return;
 
-      // Extract text from message parts
-      const textParts: string[] = [];
-      for (const part of output.parts) {
-        if ("text" in part && typeof part.text === "string") {
-          textParts.push(part.text);
-        }
-      }
-      session.lastUserMessage = textParts.join("\n");
-    },
-
-    /**
-     * Inject matching rules into the system prompt.
-     * This is the core hook that makes rules work.
-     */
-    "experimental.chat.system.transform": async (input, output) => {
-      const session = getSession(input.sessionID);
-
-      // Re-load rules (uses mtime cache, very fast on warm hits)
-      const rules = await loader.loadAll(userRulesDir, projectRulesDir, legacyFilePath);
-
-      if (rules.length === 0) {
-        await client.app.log({
-          body: {
-            service: SERVICE_NAME,
-            level: "debug",
-            message: "No rules loaded for system prompt injection",
-          },
-        });
-        return;
-      }
-
-      // Select which rules to inject/suggest/list
-      const { injected, suggested, available } = selectRules(rules, session);
-
-      await client.app.log({
-        body: {
-          service: SERVICE_NAME,
-          level: "debug",
-          message: "Selected rules for system prompt",
-          extra: {
+          const { injected, suggested, available } = selectRules(rules, session);
+          yield* Effect.logDebug("Selected rules for system prompt", {
             totalRules: rules.length,
             injected: injected.map((m) => m.rule.name),
             suggested: suggested.map((m) => m.rule.name),
             available: available.map((r) => r.name),
-          },
-        },
+          });
+
+          if (injected.length === 0 && suggested.length === 0 && available.length === 0) return;
+
+          const section = formatSystemPromptSection(injected, suggested, available);
+          if (section.length > 0) {
+            event.system.push({ type: "text", text: section });
+          }
+        }),
+      );
+
+      // --- Tools (Effect Schema, structured results) ---
+
+      const RuleInputSchema = Schema.Struct({
+        name: Schema.String,
+        description: Schema.String,
+        content: Schema.String,
+        globs: Schema.optional(Schema.Array(Schema.String)),
+        alwaysApply: Schema.optional(Schema.Boolean),
       });
 
-      if (injected.length === 0 && suggested.length === 0 && available.length === 0) return;
+      const createUserRuleExecute = (input: typeof RuleInputSchema.Type) =>
+        Effect.gen(function* () {
+          yield* Effect.logInfo(`Creating user-level rule: ${input.name}`);
+          const result = yield* Effect.tryPromise(() =>
+            createUserRule(
+              input.name,
+              input.description,
+              input.content,
+              input.globs,
+              input.alwaysApply,
+            ),
+          ).pipe(
+            Effect.catch(() =>
+              Effect.succeed({
+                success: false as const,
+                message: "Unexpected internal error while creating user rule",
+                filePath: undefined as string | undefined,
+              }),
+            ),
+          );
+          if (result.success) {
+            yield* Effect.logInfo(`Created user-level rule: ${input.name}`, {
+              filePath: result.filePath,
+            });
+            return { content: `Created user-level rule "${input.name}" at ${result.filePath}` };
+          }
+          yield* Effect.logWarning(`Failed to create user-level rule: ${input.name}`, {
+            error: result.message,
+          });
+          return { content: `Failed to create user rule: ${result.message}` };
+        });
 
-      // Format and append to system prompt
-      const section = formatSystemPromptSection(injected, suggested, available);
-      if (section.length > 0) {
-        output.system.push(section);
-      }
-    },
+      const createProjectRuleExecute = (input: typeof RuleInputSchema.Type) =>
+        Effect.gen(function* () {
+          yield* Effect.logInfo(`Creating project-level rule: ${input.name}`);
+          const result = yield* Effect.tryPromise(() =>
+            createProjectRule(
+              input.name,
+              input.description,
+              input.content,
+              input.globs,
+              input.alwaysApply,
+              projectRoot,
+            ),
+          ).pipe(
+            Effect.catch(() =>
+              Effect.succeed({
+                success: false as const,
+                message: "Unexpected internal error while creating project rule",
+                filePath: undefined as string | undefined,
+              }),
+            ),
+          );
+          if (result.success) {
+            yield* Effect.logInfo(`Created project-level rule: ${input.name}`, {
+              filePath: result.filePath,
+            });
+            return { content: `Created project-level rule "${input.name}" at ${result.filePath}` };
+          }
+          yield* Effect.logWarning(`Failed to create project-level rule: ${input.name}`, {
+            error: result.message,
+          });
+          return { content: `Failed to create project rule: ${result.message}` };
+        });
 
-    /**
-     * Register slash commands for rule management.
-     */
-    config: async (config) => {
-      // Initialize command config if not exists
-      config.command = config.command || {};
+      const listRulesExecute = () =>
+        Effect.gen(function* () {
+          const result = yield* Effect.tryPromise(() =>
+            listRules(userRulesDir, projectRulesDir, legacyFilePath, loader),
+          ).pipe(
+            Effect.catch(() =>
+              Effect.succeed({
+                success: false as const,
+                message: "Unexpected internal error while listing rules",
+                rules: undefined as
+                  | Array<{
+                      name: string;
+                      source: string;
+                      mode: string;
+                      description?: string;
+                      globs: string[];
+                      alwaysApply: boolean;
+                      filePath: string;
+                    }>
+                  | undefined,
+              }),
+            ),
+          );
+          if (!result.success || !result.rules) {
+            yield* Effect.logWarning("Failed to list rules", { error: result.message });
+            return { content: `Failed to list rules: ${result.message}` };
+          }
+          yield* Effect.logInfo(`Listed ${result.rules.length} cursor rule(s)`);
+          return { content: formatRulesList(result.rules) };
+        });
 
-      // Command to create a user-level rule
-      config.command["create-user-rule"] = {
-        description: "Create a new user-level rule that applies globally",
-        template: `Create a new user-level rule for OpenCode. Ask the user for:
+      yield* ctx.tool.transform((editor) => {
+        editor.add({
+          name: "create_user_rule",
+          description: "Create a new user-level (global) rule for OpenCode",
+          input: RuleInputSchema,
+          execute: createUserRuleExecute,
+        });
+        editor.add({
+          name: "create_project_rule",
+          description: "Create a new project-level rule for OpenCode",
+          input: RuleInputSchema,
+          execute: createProjectRuleExecute,
+        });
+        editor.add({
+          name: "list_rules",
+          description: "List all currently loaded cursor rules with their loading strategies",
+          input: Schema.Struct({}),
+          execute: listRulesExecute,
+        });
+      });
+
+      // --- Commands (best practice: owned commands via transform) ---
+
+      yield* ctx.command.transform((editor) => {
+        editor.add({
+          name: "create-user-rule",
+          description: "Create a new user-level rule that applies globally",
+          execute: (input) =>
+            ctx.session
+              .prompt({
+                ...input.prompt,
+                sessionID: input.sessionID,
+                text: `Create a new user-level rule for OpenCode. Ask the user for:
 1. Rule name (e.g., "typescript-standards", "bun-preference")
 2. Brief description of what the rule does
 3. Rule content (the actual instructions)
 4. Whether it should always apply (optional, default: false)
 5. File glob patterns if it should auto-attach to specific files (optional)
 
-Use the create_user_rule tool to create the rule file at the user level (~/.config/opencode/rules/).`,
-      };
+Use the create_user_rule tool to create the rule file at the user level (~/.config/opencode/rules/).
 
-      // Command to create a project-level rule
-      config.command["create-project-rule"] = {
-        description: "Create a new project-level rule for the current workspace",
-        template: `Create a new project-level rule for OpenCode. Ask the user for:
+${input.prompt.text}`,
+                delivery: input.delivery,
+              })
+              .pipe(Effect.asVoid),
+        });
+        editor.add({
+          name: "create-project-rule",
+          description: "Create a new project-level rule for the current workspace",
+          execute: (input) =>
+            ctx.session
+              .prompt({
+                ...input.prompt,
+                sessionID: input.sessionID,
+                text: `Create a new project-level rule for OpenCode. Ask the user for:
 1. Rule name (e.g., "api-conventions", "component-patterns")
 2. Brief description of what the rule does
 3. Rule content (the actual instructions)
 4. Whether it should always apply (optional, default: false)
 5. File glob patterns if it should auto-attach to specific files (optional)
 
-Use the create_project_rule tool to create the rule file at the project level (.opencode/rules/).`,
-      };
+Use the create_project_rule tool to create the rule file at the project level (.opencode/rules/).
 
-      // Command to list all loaded rules
-      config.command["list-rules"] = {
-        description: "List all currently loaded rules with their loading strategies",
-        template: `Show all loaded cursor rules for the current session, including:
+${input.prompt.text}`,
+                delivery: input.delivery,
+              })
+              .pipe(Effect.asVoid),
+        });
+        editor.add({
+          name: "list-rules",
+          description: "List all currently loaded rules with their loading strategies",
+          execute: (input) =>
+            ctx.session
+              .prompt({
+                ...input.prompt,
+                sessionID: input.sessionID,
+                text: `Show all loaded cursor rules for the current session, including:
 - Rule name
 - Source (user-level, project-level, or legacy .cursorrules)
 - Loading mode (always, glob, agent-requested, manual)
 - File patterns (for glob mode)
 - Description
 
-Use the list_rules tool to retrieve and display this information.`,
-      };
-    },
+Use the list_rules tool to retrieve and display this information.
 
-    /**
-     * Register tools for rule management.
-     */
-    tool: {
-      create_user_rule: tool({
-        description: "Create a new user-level (global) rule for OpenCode",
-        args: {
-          name: tool.schema.string(
-            "Rule name (will be used as filename, e.g., 'typescript-standards')",
-          ),
-          description: tool.schema.string("Brief description of what the rule does"),
-          content: tool.schema.string("The rule content/instructions in Markdown"),
-          globs: tool.schema.optional(
-            tool.schema.array(
-              tool.schema.string("Glob pattern (e.g., '*.ts', 'src/**/*.tsx')"),
-              "File glob patterns for auto-attach mode",
-            ),
-          ),
-          alwaysApply: tool.schema.optional(
-            tool.schema.boolean("Whether this rule should always be applied"),
-          ),
-        },
-        execute: async (args) => {
-          await client.app.log({
-            body: {
-              service: SERVICE_NAME,
-              level: "info",
-              message: `Creating user-level rule: ${args.name}`,
-              extra: {
-                name: args.name,
-                globs: args.globs,
-                alwaysApply: args.alwaysApply,
-              },
-            },
-          });
+${input.prompt.text}`,
+                delivery: input.delivery,
+              })
+              .pipe(Effect.asVoid),
+        });
+      });
+    }),
+});
 
-          const result = await createUserRule(
-            args.name,
-            args.description,
-            args.content,
-            args.globs,
-            args.alwaysApply,
-          );
+/**
+ * Extract file paths from a tool input payload and add them (repo-relative)
+ * to the session's observed set.
+ */
+function collectFilePaths(input: unknown, projectRoot: string, into: Set<string>): void {
+  if (!input || typeof input !== "object") return;
+  const args = input as Record<string, unknown>;
+  for (const key of [...FILE_PATH_KEYS, ...LOCATION_KEYS]) {
+    const val = args[key];
+    if (typeof val === "string" && val.length > 0) {
+      into.add(toRelative(val, projectRoot));
+    }
+  }
+}
 
-          if (result.success && result.filePath) {
-            await client.app.log({
-              body: {
-                service: SERVICE_NAME,
-                level: "info",
-                message: `Successfully created user-level rule: ${args.name}`,
-                extra: { filePath: result.filePath },
-              },
-            });
-            return `✅ Created user-level rule "${args.name}" at ${result.filePath}`;
-          }
+function toRelative(val: string, projectRoot: string): string {
+  return val.startsWith(projectRoot) ? val.slice(projectRoot.length + 1) : val;
+}
 
-          await client.app.log({
-            body: {
-              service: SERVICE_NAME,
-              level: "error",
-              message: `Failed to create user-level rule: ${args.name}`,
-              extra: { error: result.message },
-            },
-          });
-          return `❌ Failed to create user rule: ${result.message}`;
-        },
-      }),
+function asString(val: unknown): string | undefined {
+  return typeof val === "string" && val.length > 0 ? val : undefined;
+}
 
-      create_project_rule: tool({
-        description: "Create a new project-level rule for OpenCode",
-        args: {
-          name: tool.schema.string("Rule name (will be used as filename, e.g., 'api-conventions')"),
-          description: tool.schema.string("Brief description of what the rule does"),
-          content: tool.schema.string("The rule content/instructions in Markdown"),
-          globs: tool.schema.optional(
-            tool.schema.array(
-              tool.schema.string("Glob pattern (e.g., '*.ts', 'src/**/*.tsx')"),
-              "File glob patterns for auto-attach mode",
-            ),
-          ),
-          alwaysApply: tool.schema.optional(
-            tool.schema.boolean("Whether this rule should always be applied"),
-          ),
-        },
-        execute: async (args) => {
-          await client.app.log({
-            body: {
-              service: SERVICE_NAME,
-              level: "info",
-              message: `Creating project-level rule: ${args.name}`,
-              extra: {
-                name: args.name,
-                globs: args.globs,
-                alwaysApply: args.alwaysApply,
-              },
-            },
-          });
+function asPositiveInt(val: unknown): number | undefined {
+  return typeof val === "number" && Number.isInteger(val) && val > 0 ? val : undefined;
+}
 
-          const result = await createProjectRule(
-            args.name,
-            args.description,
-            args.content,
-            args.globs,
-            args.alwaysApply,
-            projectRoot,
-          );
+/**
+ * Format loaded rules into a readable Markdown listing.
+ */
+function formatRulesList(
+  rules: Array<{
+    name: string;
+    source: string;
+    mode: string;
+    description?: string;
+    globs: string[];
+    alwaysApply: boolean;
+    filePath: string;
+  }>,
+): string {
+  const lines: string[] = [];
+  lines.push("# Loaded Cursor Rules\n");
 
-          if (result.success && result.filePath) {
-            await client.app.log({
-              body: {
-                service: SERVICE_NAME,
-                level: "info",
-                message: `Successfully created project-level rule: ${args.name}`,
-                extra: { filePath: result.filePath },
-              },
-            });
-            return `✅ Created project-level rule "${args.name}" at ${result.filePath}`;
-          }
+  if (rules.length > 0) {
+    const userRules = rules.filter((r) => r.source === "user");
+    const projectRules = rules.filter((r) => r.source === "project");
+    const legacyRules = rules.filter((r) => r.source === "legacy");
 
-          await client.app.log({
-            body: {
-              service: SERVICE_NAME,
-              level: "error",
-              message: `Failed to create project-level rule: ${args.name}`,
-              extra: { error: result.message },
-            },
-          });
-          return `❌ Failed to create project rule: ${result.message}`;
-        },
-      }),
+    if (userRules.length > 0) {
+      lines.push("## User-Level Rules (~/.config/opencode/rules/)\n");
+      for (const rule of userRules) {
+        lines.push(formatRuleEntry(rule));
+      }
+      lines.push("");
+    }
 
-      list_rules: tool({
-        description: "List all currently loaded cursor rules with their loading strategies",
-        args: {},
-        execute: async () => {
-          await client.app.log({
-            body: {
-              service: SERVICE_NAME,
-              level: "info",
-              message: "Listing all cursor rules",
-            },
-          });
+    if (projectRules.length > 0) {
+      lines.push("## Project-Level Rules (.opencode/rules/)\n");
+      for (const rule of projectRules) {
+        lines.push(formatRuleEntry(rule));
+      }
+      lines.push("");
+    }
 
-          const result = await listRules(userRulesDir, projectRulesDir, legacyFilePath, loader);
+    if (legacyRules.length > 0) {
+      lines.push("## Legacy Rules (.cursorrules)\n");
+      for (const rule of legacyRules) {
+        lines.push(formatRuleEntry(rule));
+      }
+      lines.push("");
+    }
 
-          if (!result.success || !result.rules) {
-            await client.app.log({
-              body: {
-                service: SERVICE_NAME,
-                level: "error",
-                message: "Failed to list rules",
-                extra: { error: result.message },
-              },
-            });
-            return `❌ Failed to list rules: ${result.message}`;
-          }
+    lines.push(`\n**Total: ${rules.length} rule(s)**`);
+  } else {
+    lines.push("No rules loaded.");
+    lines.push("\nCreate rules using:");
+    lines.push("- `/create-user-rule` - for global rules");
+    lines.push("- `/create-project-rule` - for project-specific rules");
+  }
 
-          await client.app.log({
-            body: {
-              service: SERVICE_NAME,
-              level: "info",
-              message: `Listed ${result.rules.length} cursor rule(s)`,
-            },
-          });
-
-          // Format the rules into a readable output
-          const lines: string[] = [];
-          lines.push("# Loaded Cursor Rules\n");
-
-          if (result.rules.length > 0) {
-            // Group by source
-            const userRules = result.rules.filter((r) => r.source === "user");
-            const projectRules = result.rules.filter((r) => r.source === "project");
-            const legacyRules = result.rules.filter((r) => r.source === "legacy");
-
-            if (userRules.length > 0) {
-              lines.push("## User-Level Rules (~/.config/opencode/rules/)\n");
-              for (const rule of userRules) {
-                lines.push(formatRuleEntry(rule));
-              }
-              lines.push("");
-            }
-
-            if (projectRules.length > 0) {
-              lines.push("## Project-Level Rules (.opencode/rules/)\n");
-              for (const rule of projectRules) {
-                lines.push(formatRuleEntry(rule));
-              }
-              lines.push("");
-            }
-
-            if (legacyRules.length > 0) {
-              lines.push("## Legacy Rules (.cursorrules)\n");
-              for (const rule of legacyRules) {
-                lines.push(formatRuleEntry(rule));
-              }
-              lines.push("");
-            }
-
-            lines.push(`\n**Total: ${result.rules.length} rule(s)**`);
-          } else {
-            lines.push("No rules loaded.");
-            lines.push("\nCreate rules using:");
-            lines.push("- `/create-user-rule` - for global rules");
-            lines.push("- `/create-project-rule` - for project-specific rules");
-          }
-
-          return lines.join("\n");
-        },
-      }),
-    },
-  };
-};
+  return lines.join("\n");
+}
 
 /**
  * Format a single rule entry for display.
@@ -488,13 +446,13 @@ function formatRuleEntry(rule: {
   // Name and mode badge
   const modeBadge =
     rule.mode === "always"
-      ? "🔴 always"
+      ? "always"
       : rule.mode === "glob"
-        ? "🟡 glob"
+        ? "glob"
         : rule.mode === "agent"
-          ? "🔵 agent"
-          : "⚪ manual";
-  parts.push(`### ${rule.name} ${modeBadge}`);
+          ? "agent"
+          : "manual";
+  parts.push(`### ${rule.name} [${modeBadge}]`);
 
   // Description
   if (rule.description) {
@@ -511,5 +469,3 @@ function formatRuleEntry(rule: {
 
   return parts.join("\n");
 }
-
-export default CursorRulesPlugin;

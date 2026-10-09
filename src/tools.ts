@@ -1,7 +1,9 @@
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Rule } from "./types";
+import { stringify as stringifyYaml } from "yaml";
+import { getRuleMode } from "./matcher.ts";
+import type { Rule } from "./types.ts";
 
 /**
  * Get the user rules directory path (respects XDG_CONFIG_HOME)
@@ -42,49 +44,34 @@ function sanitizeRuleName(name: string): string {
 }
 
 /**
- * Generate MDC file content
+ * Generate MDC file content with YAML-safe frontmatter.
+ * Values are serialized with a YAML encoder so descriptions containing
+ * quotes, colons, or newlines cannot break the frontmatter block.
  */
 function generateMdcContent(
   description: string,
   content: string,
-  globs?: string[],
+  globs?: readonly string[],
   alwaysApply?: boolean,
 ): string {
-  const frontmatterLines: string[] = [];
+  const frontmatter: Record<string, unknown> = {};
 
   if (description) {
-    frontmatterLines.push(`description: "${description}"`);
+    frontmatter.description = description;
   }
 
   if (globs && globs.length > 0) {
-    if (globs.length === 1) {
-      frontmatterLines.push(`globs: "${globs[0]}"`);
-    } else {
-      frontmatterLines.push(`globs:`);
-      for (const glob of globs) {
-        frontmatterLines.push(`  - "${glob}"`);
-      }
-    }
+    frontmatter.globs = globs.length === 1 ? globs[0] : globs;
   }
 
   if (alwaysApply) {
-    frontmatterLines.push(`alwaysApply: true`);
+    frontmatter.alwaysApply = true;
   }
 
-  const frontmatter =
-    frontmatterLines.length > 0 ? `---\n${frontmatterLines.join("\n")}\n---\n\n` : "";
+  const encoded =
+    Object.keys(frontmatter).length > 0 ? `---\n${stringifyYaml(frontmatter)}---\n\n` : "";
 
-  return frontmatter + content;
-}
-
-/**
- * Determine the rule mode based on frontmatter
- */
-function getRuleMode(rule: Rule): string {
-  if (rule.frontmatter.alwaysApply) return "always";
-  if (rule.frontmatter.globs.length > 0) return "glob";
-  if (rule.frontmatter.description) return "agent";
-  return "manual";
+  return encoded + content;
 }
 
 /**
@@ -94,7 +81,7 @@ export async function createUserRule(
   name: string,
   description: string,
   content: string,
-  globs?: string[],
+  globs?: readonly string[],
   alwaysApply?: boolean,
 ): Promise<{ success: boolean; message: string; filePath?: string }> {
   try {
@@ -133,7 +120,7 @@ export async function createProjectRule(
   name: string,
   description: string,
   content: string,
-  globs?: string[],
+  globs?: readonly string[],
   alwaysApply?: boolean,
   worktree?: string,
 ): Promise<{ success: boolean; message: string; filePath?: string }> {

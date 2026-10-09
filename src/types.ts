@@ -63,4 +63,8 @@ export interface MatchedRule {
 export interface CacheEntry {
   rule: Rule;
   mtimeMs: number;
+  /** File size in bytes; guards against coarse mtime resolution */
+  size: number;
+  /** Source scope the entry was loaded for */
+  source: RuleSource;
 }

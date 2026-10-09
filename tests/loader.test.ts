@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { RuleLoader } from "../src/loader";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { RuleLoader } from "../src/loader.ts";
 
-const FIXTURES_DIR = join(import.meta.dir, "fixtures", "loader-test");
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const FIXTURES_DIR = join(TEST_DIR, "fixtures", "loader-test");
 const USER_RULES = join(FIXTURES_DIR, "user-rules");
 const PROJECT_RULES = join(FIXTURES_DIR, "project-rules");
 const LEGACY_FILE = join(FIXTURES_DIR, ".cursorrules");
@@ -55,9 +58,15 @@ Project rule content.`,
 
       const rules = await loader.loadAll(USER_RULES, PROJECT_RULES, null);
 
-      expect(rules.length).toBe(2);
-      expect(rules.find((r) => r.name === "user-rule")).toBeDefined();
-      expect(rules.find((r) => r.name === "project-rule")).toBeDefined();
+      assert.strictEqual(rules.length, 2);
+      assert.notStrictEqual(
+        rules.find((r) => r.name === "user-rule"),
+        undefined,
+      );
+      assert.notStrictEqual(
+        rules.find((r) => r.name === "project-rule"),
+        undefined,
+      );
     });
 
     test("project rules override user rules on name collision", async () => {
@@ -81,9 +90,9 @@ Project content.`,
 
       const rules = await loader.loadAll(USER_RULES, PROJECT_RULES, null);
 
-      expect(rules.length).toBe(1);
-      expect(rules[0]?.source).toBe("project");
-      expect(rules[0]?.frontmatter.description).toBe("Project version");
+      assert.strictEqual(rules.length, 1);
+      assert.strictEqual(rules[0]?.source, "project");
+      assert.strictEqual(rules[0]?.frontmatter.description, "Project version");
     });
 
     test("loads legacy .cursorrules file", async () => {
@@ -91,11 +100,11 @@ Project content.`,
 
       const rules = await loader.loadAll(null, null, LEGACY_FILE);
 
-      expect(rules.length).toBe(1);
-      expect(rules[0]?.name).toBe(".cursorrules");
-      expect(rules[0]?.source).toBe("legacy");
-      expect(rules[0]?.frontmatter.alwaysApply).toBe(true);
-      expect(rules[0]?.body).toBe("Legacy cursor rules content.");
+      assert.strictEqual(rules.length, 1);
+      assert.strictEqual(rules[0]?.name, ".cursorrules");
+      assert.strictEqual(rules[0]?.source, "legacy");
+      assert.strictEqual(rules[0]?.frontmatter.alwaysApply, true);
+      assert.strictEqual(rules[0]?.body, "Legacy cursor rules content.");
     });
 
     test("handles missing directories gracefully", async () => {
@@ -105,12 +114,12 @@ Project content.`,
         "/nonexistent/.cursorrules",
       );
 
-      expect(rules.length).toBe(0);
+      assert.strictEqual(rules.length, 0);
     });
 
     test("handles null paths gracefully", async () => {
       const rules = await loader.loadAll(null, null, null);
-      expect(rules.length).toBe(0);
+      assert.strictEqual(rules.length, 0);
     });
 
     test("skips empty files", async () => {
@@ -126,8 +135,8 @@ content`,
 
       const rules = await loader.loadAll(null, PROJECT_RULES, null);
 
-      expect(rules.length).toBe(1);
-      expect(rules[0]?.name).toBe("valid");
+      assert.strictEqual(rules.length, 1);
+      assert.strictEqual(rules[0]?.name, "valid");
     });
   });
 
@@ -143,8 +152,8 @@ Content.`,
       );
 
       const rules = await loader.loadAll(null, PROJECT_RULES, null);
-      expect(rules.length).toBe(1);
-      expect(rules[0]?.name).toBe("rule");
+      assert.strictEqual(rules.length, 1);
+      assert.strictEqual(rules[0]?.name, "rule");
     });
 
     test("loads .mdc files", async () => {
@@ -158,8 +167,8 @@ Content.`,
       );
 
       const rules = await loader.loadAll(null, PROJECT_RULES, null);
-      expect(rules.length).toBe(1);
-      expect(rules[0]?.name).toBe("rule");
+      assert.strictEqual(rules.length, 1);
+      assert.strictEqual(rules[0]?.name, "rule");
     });
 
     test("loads mixed .mdc and .md files", async () => {
@@ -182,7 +191,7 @@ Beta.`,
       );
 
       const rules = await loader.loadAll(null, PROJECT_RULES, null);
-      expect(rules.length).toBe(2);
+      assert.strictEqual(rules.length, 2);
     });
   });
 
@@ -199,13 +208,13 @@ Content.`,
 
       // First load
       const rules1 = await loader.loadAll(null, PROJECT_RULES, null);
-      expect(rules1.length).toBe(1);
-      expect(loader.cacheSize).toBe(1);
+      assert.strictEqual(rules1.length, 1);
+      assert.strictEqual(loader.cacheSize, 1);
 
       // Second load (should hit cache)
       const rules2 = await loader.loadAll(null, PROJECT_RULES, null);
-      expect(rules2.length).toBe(1);
-      expect(rules2[0]?.frontmatter.description).toBe("cached rule");
+      assert.strictEqual(rules2.length, 1);
+      assert.strictEqual(rules2[0]?.frontmatter.description, "cached rule");
     });
 
     test("invalidates cache when file changes", async () => {
@@ -221,10 +230,10 @@ Content v1.`,
 
       // First load
       const rules1 = await loader.loadAll(null, PROJECT_RULES, null);
-      expect(rules1[0]?.frontmatter.description).toBe("version 1");
+      assert.strictEqual(rules1[0]?.frontmatter.description, "version 1");
 
       // Modify file (ensure different mtime by bumping it)
-      await Bun.sleep(10);
+      await new Promise((r) => setTimeout(r, 10));
       writeRule(
         PROJECT_RULES,
         "changing.mdc",
@@ -240,7 +249,7 @@ Content v2.`,
 
       // Second load (should invalidate cache)
       const rules2 = await loader.loadAll(null, PROJECT_RULES, null);
-      expect(rules2[0]?.frontmatter.description).toBe("version 2");
+      assert.strictEqual(rules2[0]?.frontmatter.description, "version 2");
     });
 
     test("clearCache resets all cached entries", async () => {
@@ -254,10 +263,10 @@ Content.`,
       );
 
       await loader.loadAll(null, PROJECT_RULES, null);
-      expect(loader.cacheSize).toBe(1);
+      assert.strictEqual(loader.cacheSize, 1);
 
       loader.clearCache();
-      expect(loader.cacheSize).toBe(0);
+      assert.strictEqual(loader.cacheSize, 0);
     });
   });
 
@@ -281,9 +290,9 @@ Symlinked content.`,
 
       const rules = await loader.loadAll(null, PROJECT_RULES, null);
 
-      expect(rules.length).toBe(1);
-      expect(rules[0]?.name).toBe("symlinked");
-      expect(rules[0]?.frontmatter.alwaysApply).toBe(true);
+      assert.strictEqual(rules.length, 1);
+      assert.strictEqual(rules[0]?.name, "symlinked");
+      assert.strictEqual(rules[0]?.frontmatter.alwaysApply, true);
     });
 
     test("follows symlinked directories", async () => {
@@ -304,8 +313,8 @@ Cursor rule content.`,
 
       const rules = await loader.loadAll(null, linkedDir, null);
 
-      expect(rules.length).toBe(1);
-      expect(rules[0]?.name).toBe("from-cursor");
+      assert.strictEqual(rules.length, 1);
+      assert.strictEqual(rules[0]?.name, "from-cursor");
     });
 
     test("handles broken symlinks gracefully", async () => {
@@ -330,8 +339,8 @@ Valid content.`,
       const rules = await loader.loadAll(null, PROJECT_RULES, null);
 
       // Should load the valid rule and skip the broken symlink
-      expect(rules.length).toBe(1);
-      expect(rules[0]?.name).toBe("valid");
+      assert.strictEqual(rules.length, 1);
+      assert.strictEqual(rules[0]?.name, "valid");
     });
   });
 
@@ -347,7 +356,7 @@ content`,
       );
 
       const rules = await loader.loadAll(USER_RULES, null, null);
-      expect(rules[0]?.source).toBe("user");
+      assert.strictEqual(rules[0]?.source, "user");
     });
 
     test("tags project rules with source 'project'", async () => {
@@ -361,14 +370,14 @@ content`,
       );
 
       const rules = await loader.loadAll(null, PROJECT_RULES, null);
-      expect(rules[0]?.source).toBe("project");
+      assert.strictEqual(rules[0]?.source, "project");
     });
 
     test("tags legacy rules with source 'legacy'", async () => {
       writeFileSync(LEGACY_FILE, "legacy content", "utf-8");
 
       const rules = await loader.loadAll(null, null, LEGACY_FILE);
-      expect(rules[0]?.source).toBe("legacy");
+      assert.strictEqual(rules[0]?.source, "legacy");
     });
   });
 });

@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { parseMdc } from "../src/parser";
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import { parseMdc } from "../src/parser.ts";
 
 describe("parseMdc", () => {
   describe("frontmatter extraction", () => {
@@ -14,20 +15,20 @@ Use strict TypeScript mode.`;
 
       const result = parseMdc(raw);
 
-      expect(result.frontmatter.description).toBe("TypeScript coding standards");
-      expect(result.frontmatter.globs).toEqual(["*.ts", "*.tsx"]);
-      expect(result.frontmatter.alwaysApply).toBe(true);
-      expect(result.body.trim()).toBe("Use strict TypeScript mode.");
+      assert.strictEqual(result.frontmatter.description, "TypeScript coding standards");
+      assert.deepStrictEqual(result.frontmatter.globs, ["*.ts", "*.tsx"]);
+      assert.strictEqual(result.frontmatter.alwaysApply, true);
+      assert.strictEqual(result.body.trim(), "Use strict TypeScript mode.");
     });
 
     test("returns defaults when no frontmatter present", () => {
       const raw = "Just some markdown content.\nWith multiple lines.";
       const result = parseMdc(raw);
 
-      expect(result.frontmatter.description).toBeUndefined();
-      expect(result.frontmatter.globs).toEqual([]);
-      expect(result.frontmatter.alwaysApply).toBe(false);
-      expect(result.body).toBe(raw);
+      assert.strictEqual(result.frontmatter.description, undefined);
+      assert.deepStrictEqual(result.frontmatter.globs, []);
+      assert.strictEqual(result.frontmatter.alwaysApply, false);
+      assert.strictEqual(result.body, raw);
     });
 
     test("handles empty frontmatter", () => {
@@ -37,18 +38,18 @@ Body content here.`;
 
       const result = parseMdc(raw);
 
-      expect(result.frontmatter.description).toBeUndefined();
-      expect(result.frontmatter.globs).toEqual([]);
-      expect(result.frontmatter.alwaysApply).toBe(false);
-      expect(result.body.trim()).toBe("Body content here.");
+      assert.strictEqual(result.frontmatter.description, undefined);
+      assert.deepStrictEqual(result.frontmatter.globs, []);
+      assert.strictEqual(result.frontmatter.alwaysApply, false);
+      assert.strictEqual(result.body.trim(), "Body content here.");
     });
 
     test("handles empty string input", () => {
       const result = parseMdc("");
 
-      expect(result.frontmatter.globs).toEqual([]);
-      expect(result.frontmatter.alwaysApply).toBe(false);
-      expect(result.body).toBe("");
+      assert.deepStrictEqual(result.frontmatter.globs, []);
+      assert.strictEqual(result.frontmatter.alwaysApply, false);
+      assert.strictEqual(result.body, "");
     });
 
     test("handles malformed YAML gracefully", () => {
@@ -62,9 +63,9 @@ Body content.`;
       const result = parseMdc(raw);
 
       // Should treat as no frontmatter
-      expect(result.frontmatter.globs).toEqual([]);
-      expect(result.frontmatter.alwaysApply).toBe(false);
-      expect(result.body).toBe(raw);
+      assert.deepStrictEqual(result.frontmatter.globs, []);
+      assert.strictEqual(result.frontmatter.alwaysApply, false);
+      assert.strictEqual(result.body, raw);
     });
 
     test("preserves body content after frontmatter exactly", () => {
@@ -82,7 +83,7 @@ description: test
 ${body}`;
 
       const result = parseMdc(raw);
-      expect(result.body).toBe(body);
+      assert.strictEqual(result.body, body);
     });
   });
 
@@ -94,7 +95,7 @@ globs: "*.ts, *.tsx, src/**/*.js"
 body`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.globs).toEqual(["*.ts", "*.tsx", "src/**/*.js"]);
+      assert.deepStrictEqual(result.frontmatter.globs, ["*.ts", "*.tsx", "src/**/*.js"]);
     });
 
     test("handles array format", () => {
@@ -106,7 +107,7 @@ globs:
 body`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.globs).toEqual(["*.ts", "*.tsx"]);
+      assert.deepStrictEqual(result.frontmatter.globs, ["*.ts", "*.tsx"]);
     });
 
     test("handles single string glob (no commas)", () => {
@@ -116,7 +117,7 @@ globs: "**/*.test.ts"
 body`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.globs).toEqual(["**/*.test.ts"]);
+      assert.deepStrictEqual(result.frontmatter.globs, ["**/*.test.ts"]);
     });
 
     test("trims whitespace from globs", () => {
@@ -126,7 +127,7 @@ globs: "  *.ts ,  *.tsx  "
 body`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.globs).toEqual(["*.ts", "*.tsx"]);
+      assert.deepStrictEqual(result.frontmatter.globs, ["*.ts", "*.tsx"]);
     });
 
     test("filters empty strings from globs", () => {
@@ -136,7 +137,7 @@ globs: "*.ts, , *.tsx, "
 body`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.globs).toEqual(["*.ts", "*.tsx"]);
+      assert.deepStrictEqual(result.frontmatter.globs, ["*.ts", "*.tsx"]);
     });
 
     test("returns empty array for null/undefined globs", () => {
@@ -146,7 +147,7 @@ description: test
 body`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.globs).toEqual([]);
+      assert.deepStrictEqual(result.frontmatter.globs, []);
     });
 
     test("returns empty array for invalid globs type", () => {
@@ -156,7 +157,7 @@ globs: 42
 body`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.globs).toEqual([]);
+      assert.deepStrictEqual(result.frontmatter.globs, []);
     });
   });
 
@@ -166,7 +167,7 @@ body`;
 alwaysApply: true
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.alwaysApply).toBe(true);
+      assert.strictEqual(parseMdc(raw).frontmatter.alwaysApply, true);
     });
 
     test("handles false boolean", () => {
@@ -174,7 +175,7 @@ body`;
 alwaysApply: false
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.alwaysApply).toBe(false);
+      assert.strictEqual(parseMdc(raw).frontmatter.alwaysApply, false);
     });
 
     test("defaults to false when missing", () => {
@@ -182,7 +183,7 @@ body`;
 description: test
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.alwaysApply).toBe(false);
+      assert.strictEqual(parseMdc(raw).frontmatter.alwaysApply, false);
     });
 
     test("handles string 'true'", () => {
@@ -190,7 +191,7 @@ body`;
 alwaysApply: "true"
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.alwaysApply).toBe(true);
+      assert.strictEqual(parseMdc(raw).frontmatter.alwaysApply, true);
     });
 
     test("handles string 'false'", () => {
@@ -198,7 +199,7 @@ body`;
 alwaysApply: "false"
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.alwaysApply).toBe(false);
+      assert.strictEqual(parseMdc(raw).frontmatter.alwaysApply, false);
     });
   });
 
@@ -208,7 +209,7 @@ body`;
 description: "A helpful rule"
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.description).toBe("A helpful rule");
+      assert.strictEqual(parseMdc(raw).frontmatter.description, "A helpful rule");
     });
 
     test("returns undefined for empty string", () => {
@@ -216,7 +217,7 @@ body`;
 description: ""
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.description).toBeUndefined();
+      assert.strictEqual(parseMdc(raw).frontmatter.description, undefined);
     });
 
     test("coerces number to string", () => {
@@ -224,7 +225,7 @@ body`;
 description: 42
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.description).toBe("42");
+      assert.strictEqual(parseMdc(raw).frontmatter.description, "42");
     });
 
     test("returns undefined when not present", () => {
@@ -232,7 +233,7 @@ body`;
 globs: "*.ts"
 ---
 body`;
-      expect(parseMdc(raw).frontmatter.description).toBeUndefined();
+      assert.strictEqual(parseMdc(raw).frontmatter.description, undefined);
     });
   });
 
@@ -241,9 +242,9 @@ body`;
       const raw = '---\r\ndescription: test\r\nglobs: "*.ts"\r\n---\r\nBody content.';
       const result = parseMdc(raw);
 
-      expect(result.frontmatter.description).toBe("test");
-      expect(result.frontmatter.globs).toEqual(["*.ts"]);
-      expect(result.body.trim()).toBe("Body content.");
+      assert.strictEqual(result.frontmatter.description, "test");
+      assert.deepStrictEqual(result.frontmatter.globs, ["*.ts"]);
+      assert.strictEqual(result.body.trim(), "Body content.");
     });
 
     test("handles frontmatter with extra whitespace", () => {
@@ -254,7 +255,7 @@ globs: "*.ts"
 body`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.description).toBe("  spaced description  ");
+      assert.strictEqual(result.frontmatter.description, "  spaced description  ");
     });
 
     test("handles body with --- in content (not frontmatter)", () => {
@@ -269,9 +270,9 @@ Some content.
 More content after horizontal rule.`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.description).toBe("test");
-      expect(result.body).toContain("---");
-      expect(result.body).toContain("More content after horizontal rule.");
+      assert.strictEqual(result.frontmatter.description, "test");
+      assert.ok(result.body.includes("---"));
+      assert.ok(result.body.includes("More content after horizontal rule."));
     });
 
     test("handles very long content efficiently", () => {
@@ -285,9 +286,9 @@ ${longBody}`;
       const result = parseMdc(raw);
       const elapsed = performance.now() - start;
 
-      expect(result.frontmatter.description).toBe("big rule");
-      expect(result.body.trim().length).toBe(100_000);
-      expect(elapsed).toBeLessThan(50); // Should be very fast
+      assert.strictEqual(result.frontmatter.description, "big rule");
+      assert.strictEqual(result.body.trim().length, 100_000);
+      assert.ok(elapsed < 50); // Should be very fast
     });
 
     test("handles content that looks like frontmatter but isn't at the start", () => {
@@ -300,8 +301,8 @@ description: not frontmatter
 More text.`;
 
       const result = parseMdc(raw);
-      expect(result.frontmatter.description).toBeUndefined();
-      expect(result.body).toBe(raw);
+      assert.strictEqual(result.frontmatter.description, undefined);
+      assert.strictEqual(result.body, raw);
     });
   });
 });
