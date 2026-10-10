@@ -1,8 +1,8 @@
 # opencode-v2-cursor-rules
 
-[![npm version](https://img.shields.io/npm/v/@aguarnac/opencode-v2-cursor-rules.svg)](https://www.npmjs.com/package/@aguarnac/opencode-v2-cursor-rules)
+[![npm version](https://img.shields.io/npm/v/@aguarnac/opencode-v2-cursor-rules.svg?style=flat)](https://www.npmjs.com/package/@aguarnac/opencode-v2-cursor-rules)
 [![CI](https://github.com/guarnacciaa/opencode-cursor-rules/actions/workflows/ci.yml/badge.svg)](https://github.com/guarnacciaa/opencode-cursor-rules/actions/workflows/ci.yml)
-[![License MIT](https://img.shields.io/npm/l/@aguarnac/opencode-v2-cursor-rules.svg)](https://opensource.org/licenses/MIT)
+[![License MIT](https://img.shields.io/npm/l/@aguarnac/opencode-v2-cursor-rules.svg?style=flat)](https://opensource.org/licenses/MIT)
 
 Bring **full Cursor rules support** to OpenCode v2. This plugin reads `.mdc` rule files and injects them into AI conversations, exactly how Cursor does it.
 
